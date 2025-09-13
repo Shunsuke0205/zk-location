@@ -43,7 +43,6 @@ fn prove_range_check(
     min_x: u32,
     max_x: u32,
     trace_height: usize,
-    // log_final_poly_len: usize,
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config
     let mut rng = SmallRng::seed_from_u64(1);
@@ -75,7 +74,6 @@ fn verify_range_check(
     proof: &p3_uni_stark::Proof<MyConfig>,
     min_x: u32,
     max_x: u32,
-    // log_final_poly_len: usize,
 ) -> bool {
     // Setup Plonky3 config (must match prover)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -286,7 +284,6 @@ fn prove_inside_box(
     y_private: u32, min_y: u32, max_y: u32,
     ts_private: u32, min_ts: u32, max_ts: u32,
     trace_height: usize,
-    log_final_poly_len: usize,
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config
     let mut rng = SmallRng::seed_from_u64(1);
@@ -327,7 +324,6 @@ fn verify_inside_box(
     min_x: u32, max_x: u32,
     min_y: u32, max_y: u32,
     min_ts: u32, max_ts: u32,
-    // log_final_poly_len: usize,
 ) -> bool {
     // Setup Plonky3 config (must match prover)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -467,12 +463,11 @@ fn main() {
         let min_ts = 900;
         let max_ts = 1100;
         let trace_height = 8;
-        let log_final_poly_len = 2;
         let proof = prove_inside_box(
             x_private, min_x, max_x,
             y_private, min_y, max_y,
             ts_private, min_ts, max_ts,
-            trace_height, log_final_poly_len
+            trace_height,
         );
         println!("InsideBoxAir proof generated for (x={}, y={}, ts={}) in box:", x_private, y_private, ts_private);
         println!("  x in [{} , {}]", min_x, max_x);
@@ -494,7 +489,6 @@ fn main() {
         let min_x = 10;
         let max_x = 20;
         let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-        let log_final_poly_len = 2; // example: keep small for demo
         let proof = prove_range_check(x_private, min_x, max_x, trace_height);
         println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
 
@@ -508,7 +502,6 @@ fn main() {
         let min_x = 1000;
         let max_x = 100000;
         let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-        let log_final_poly_len = 2; // example: keep small for demo
         let proof = prove_range_check(x_private, min_x, max_x, trace_height);
         println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
 
@@ -522,7 +515,6 @@ fn main() {
         let min_x = 1000;
         let max_x = 100000;
         let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-        let log_final_poly_len = 2; // example: keep small for demo
         let proof = prove_range_check(x_private, min_x, max_x, trace_height);
         println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
 
