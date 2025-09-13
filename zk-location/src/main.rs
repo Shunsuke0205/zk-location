@@ -5,6 +5,89 @@ use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_field::PrimeCharacteristicRing; // for ONE constant
 
+// --- Plonky3 proof generation for RangeCheckAirK30 ---
+use p3_uni_stark::{prove, StarkConfig};
+use p3_baby_bear::{Poseidon2BabyBear};
+use p3_field::extension::BinomialExtensionField;
+use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
+use p3_merkle_tree::MerkleTreeMmcs;
+use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_challenger::DuplexChallenger;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+
+
+
+type Val = BabyBear;
+type Perm = Poseidon2BabyBear<16>;
+type MyHash = PaddingFreeSponge<Perm, 16, 8, 8>;
+type MyCompress = TruncatedPermutation<Perm, 2, 8, 16>;
+type ValMmcs = MerkleTreeMmcs<<Val as p3_field::Field>::Packing, <Val as p3_field::Field>::Packing, MyHash, MyCompress, 8>;
+type Challenge = BinomialExtensionField<Val, 4>;
+type ChallengeMmcs = p3_commit::ExtensionMmcs<Val, Challenge, ValMmcs>;
+type Challenger = DuplexChallenger<Val, Perm, 16, 8>;
+type Dft = p3_dft::Radix2DitParallel<Val>;
+type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
+type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
+
+/// Generate a STARK proof for min_x <= x_private <= max_x
+fn prove_range_check(
+    x_private: u32,
+    min_x: u32,
+    max_x: u32,
+    trace_height: usize,
+    log_final_poly_len: usize,
+) -> p3_uni_stark::Proof<MyConfig> {
+    // Setup Plonky3 config
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    // Build trace with variable height
+    let trace = build_trace_range_check_k30_many(x_private, min_x, max_x, trace_height);
+
+/// Build a trace for RangeCheckAirK30 with variable height (n_rows >= 1, power of two recommended)
+fn build_trace_range_check_k30_many(x_private: u32, min_x: u32, max_x: u32, n_rows: usize) -> RowMajorMatrix<BabyBear> {
+    const W: usize = 3 + 30 + 30;
+    let mut values = Vec::with_capacity(W * n_rows);
+    for _ in 0..n_rows {
+        let mut row = vec![BabyBear::ZERO; W];
+        row[0] = BabyBear::new(x_private);
+        row[1] = BabyBear::new(min_x);
+        row[2] = BabyBear::new(max_x);
+        // bits for x_private - min_x
+        let diff1 = x_private.saturating_sub(min_x);
+        for j in 0..30 {
+            let bit = (diff1 >> j) & 1;
+            row[3 + j] = BabyBear::from_bool(bit == 1);
+        }
+        // bits for max_x - x_private
+        let diff2 = max_x.saturating_sub(x_private);
+        for j in 0..30 {
+            let bit = (diff2 >> j) & 1;
+            row[33 + j] = BabyBear::from_bool(bit == 1);
+        }
+        values.extend(row);
+    }
+    RowMajorMatrix::new(values, W)
+}
+
+    // Public values: [min_x, max_x]
+    let public_values = vec![Val::new(min_x), Val::new(max_x)];
+
+    // Generate proof
+    let proof = prove(&config, &RangeCheckAirK30, trace, &public_values);
+    proof
+}
+
 // all the comments should be in English
 
 /// RangeCheckAirK30: proves min_x <= x_private <= max_x using two GteAirK30 constraints.
@@ -96,6 +179,15 @@ where
 
 
 fn main() {
+    // --- Plonky3 proof generation example ---
+    let x_private = 15;
+    let min_x = 10;
+    let max_x = 20;
+    let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
+    let log_final_poly_len = 2; // example: keep small for demo
+    let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+    println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
+
     // BabyBear field
     let x = BabyBear::new(100);
     let y = BabyBear::new(101);
