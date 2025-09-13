@@ -31,6 +31,12 @@ type Dft = p3_dft::Radix2DitParallel<Val>;
 type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
 type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
 
+
+
+// all the comments should be in English
+
+
+
 /// Generate a STARK proof for min_x <= x_private <= max_x
 fn prove_range_check(
     x_private: u32,
@@ -120,7 +126,115 @@ fn verify_range_check(
 }
 
 
-// all the comments should be in English
+
+
+
+/// InsideBoxAir: proves (min_x <= x_private <= max_x) && (min_y <= y_private <= max_y) && (min_ts <= ts_private <= max_ts)
+/// Each dimension uses RangeCheckAirK30 logic (K=30 bits per diff)
+pub struct InsideBoxAir;
+
+impl<F: Field> BaseAir<F> for InsideBoxAir {
+    fn width(&self) -> usize {
+        // x: 3 + 30 + 30
+        // y: 3 + 30 + 30
+        // ts: 3 + 30 + 30
+        3 * (3 + 30 + 30)
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for InsideBoxAir
+where
+    AB::F: Field + PrimeCharacteristicRing,
+{
+    fn eval(&self, builder: &mut AB) {
+        let row = builder.main();
+        // x block
+        let x_private = row.get(0, 0).unwrap().into();
+        let min_x = row.get(0, 1).unwrap().into();
+        let max_x = row.get(0, 2).unwrap().into();
+        // y block
+        let y_private = row.get(0, 63).unwrap().into();
+        let min_y = row.get(0, 64).unwrap().into();
+        let max_y = row.get(0, 65).unwrap().into();
+        // ts block
+        let ts_private = row.get(0, 126).unwrap().into();
+        let min_ts = row.get(0, 127).unwrap().into();
+        let max_ts = row.get(0, 128).unwrap().into();
+
+        // --- x range check ---
+        let diff1_x = x_private.clone() - min_x.clone();
+        let mut acc1_x = diff1_x.clone() - diff1_x.clone(); // ZERO
+        let mut pow2_1_x = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 3 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc1_x = acc1_x + bit_expr.clone().into() * pow2_1_x.clone();
+            if j < 29 { pow2_1_x = pow2_1_x.clone() + pow2_1_x; }
+        }
+        builder.assert_eq(acc1_x, diff1_x);
+
+        let diff2_x = max_x.clone() - x_private.clone();
+        let mut acc2_x = diff2_x.clone() - diff2_x.clone(); // ZERO
+        let mut pow2_2_x = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 33 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc2_x = acc2_x + bit_expr.clone().into() * pow2_2_x.clone();
+            if j < 29 { pow2_2_x = pow2_2_x.clone() + pow2_2_x; }
+        }
+        builder.assert_eq(acc2_x, diff2_x);
+
+        // --- y range check ---
+        let diff1_y = y_private.clone() - min_y.clone();
+        let mut acc1_y = diff1_y.clone() - diff1_y.clone(); // ZERO
+        let mut pow2_1_y = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 66 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc1_y = acc1_y + bit_expr.clone().into() * pow2_1_y.clone();
+            if j < 29 { pow2_1_y = pow2_1_y.clone() + pow2_1_y; }
+        }
+        builder.assert_eq(acc1_y, diff1_y);
+
+        let diff2_y = max_y.clone() - y_private.clone();
+        let mut acc2_y = diff2_y.clone() - diff2_y.clone(); // ZERO
+        let mut pow2_2_y = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 96 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc2_y = acc2_y + bit_expr.clone().into() * pow2_2_y.clone();
+            if j < 29 { pow2_2_y = pow2_2_y.clone() + pow2_2_y; }
+        }
+        builder.assert_eq(acc2_y, diff2_y);
+
+        // --- ts range check ---
+        let diff1_ts = ts_private.clone() - min_ts.clone();
+        let mut acc1_ts = diff1_ts.clone() - diff1_ts.clone(); // ZERO
+        let mut pow2_1_ts = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 129 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc1_ts = acc1_ts + bit_expr.clone().into() * pow2_1_ts.clone();
+            if j < 29 { pow2_1_ts = pow2_1_ts.clone() + pow2_1_ts; }
+        }
+        builder.assert_eq(acc1_ts, diff1_ts);
+
+        let diff2_ts = max_ts.clone() - ts_private.clone();
+        let mut acc2_ts = diff2_ts.clone() - diff2_ts.clone(); // ZERO
+        let mut pow2_2_ts = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 159 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc2_ts = acc2_ts + bit_expr.clone().into() * pow2_2_ts.clone();
+            if j < 29 { pow2_2_ts = pow2_2_ts.clone() + pow2_2_ts; }
+        }
+        builder.assert_eq(acc2_ts, diff2_ts);
+    }
+}
+
+
+
+
 
 /// RangeCheckAirK30: proves min_x <= x_private <= max_x using two GteAirK30 constraints.
 pub struct RangeCheckAirK30;
