@@ -216,6 +216,7 @@ where
 
 
 
+
 /// Build a trace for InsideBoxAir with variable height (n_rows >= 1, power of two recommended)
 fn build_trace_inside_box_air(
     x_private: u32, min_x: u32, max_x: u32,
@@ -458,6 +459,7 @@ fn main() {
     let verified = verify_range_check(&proof, min_x, max_x);
         println!("Plonky3 proof verification result: {}", verified);
     }
+    #[cfg(not(debug_assertions))]
     {
         // --- Plonky3 proof generation example (failing case) ---
         let x_private = 1000000;
@@ -471,6 +473,7 @@ fn main() {
     let verified = verify_range_check(&proof, min_x, max_x);
         println!("Plonky3 proof verification result: {}", verified);
     }
+    #[cfg(not(debug_assertions))]
     {
         // --- Plonky3 proof generation example (failing case) ---
         let x_private = 10;
