@@ -296,6 +296,84 @@ fn build_trace_inside_box_air(
 }
 
 
+/// Generate a STARK proof for InsideBoxAir (3D box: x, y, ts)
+fn prove_inside_box(
+    x_private: u32, min_x: u32, max_x: u32,
+    y_private: u32, min_y: u32, max_y: u32,
+    ts_private: u32, min_ts: u32, max_ts: u32,
+    trace_height: usize,
+    log_final_poly_len: usize,
+) -> p3_uni_stark::Proof<MyConfig> {
+    // Setup Plonky3 config
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    // Build trace
+    let trace = build_trace_inside_box_air(
+        x_private, min_x, max_x,
+        y_private, min_y, max_y,
+        ts_private, min_ts, max_ts,
+        trace_height
+    );
+
+    // Public values: [min_x, max_x, min_y, max_y, min_ts, max_ts]
+    let public_values = vec![
+        Val::new(min_x), Val::new(max_x),
+        Val::new(min_y), Val::new(max_y),
+        Val::new(min_ts), Val::new(max_ts)
+    ];
+
+    // Generate proof
+    let proof = prove(&config, &InsideBoxAir, trace, &public_values);
+    proof
+}
+
+/// Verify a STARK proof for InsideBoxAir (3D box: x, y, ts)
+fn verify_inside_box(
+    proof: &p3_uni_stark::Proof<MyConfig>,
+    min_x: u32, max_x: u32,
+    min_y: u32, max_y: u32,
+    min_ts: u32, max_ts: u32,
+    trace_height: usize,
+    log_final_poly_len: usize,
+) -> bool {
+    // Setup Plonky3 config (must match prover)
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    // Public values: [min_x, max_x, min_y, max_y, min_ts, max_ts]
+    let public_values = vec![
+        Val::new(min_x), Val::new(max_x),
+        Val::new(min_y), Val::new(max_y),
+        Val::new(min_ts), Val::new(max_ts)
+    ];
+
+    // Verify proof
+    let result = verify(&config, &InsideBoxAir, proof, &public_values);
+    result.is_ok()
+}
+
+
+
+
 
 
 /// RangeCheckAirK30: proves min_x <= x_private <= max_x using two GteAirK30 constraints.
@@ -387,6 +465,39 @@ where
 
 
 fn main() {
+    {
+        println!("--- InsideBoxAir: 3D box (x, y, ts) range proof demo ---");
+        let x_private = 15;
+        let min_x = 10;
+        let max_x = 20;
+        let y_private = 25;
+        let min_y = 20;
+        let max_y = 30;
+        let ts_private = 1000;
+        let min_ts = 900;
+        let max_ts = 1100;
+        let trace_height = 8;
+        let log_final_poly_len = 2;
+        let proof = prove_inside_box(
+            x_private, min_x, max_x,
+            y_private, min_y, max_y,
+            ts_private, min_ts, max_ts,
+            trace_height, log_final_poly_len
+        );
+        println!("InsideBoxAir proof generated for (x={}, y={}, ts={}) in box:", x_private, y_private, ts_private);
+        println!("  x in [{} , {}]", min_x, max_x);
+        println!("  y in [{} , {}]", min_y, max_y);
+        println!("  ts in [{} , {}]", min_ts, max_ts);
+
+        let verified = verify_inside_box(
+            &proof,
+            min_x, max_x,
+            min_y, max_y,
+            min_ts, max_ts,
+            trace_height, log_final_poly_len
+        );
+        println!("InsideBoxAir proof verification result: {}", verified);
+    }
     {
          // --- Plonky3 proof generation example ---
         let x_private = 15;
