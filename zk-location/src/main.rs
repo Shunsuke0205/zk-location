@@ -82,6 +82,12 @@ fn main() {
     println!("LTE check 999 <= 1000 -> {}", run_lte_debug(999, 1000));
     println!("LTE check 1000 <= 1000 -> {}", run_lte_debug(1000, 1000));
     println!("LTE check 1000 <= 999 -> {}", run_lte_debug(1000, 999));
+
+    println!("---");
+    println!("LT check (a < b) using GteAirK30 with a+1 ---");
+    println!("LT check 999999 < 1000000 -> {}", run_lt_debug(999999, 1000000));
+    println!("LT check 1000000 < 1000000 -> {}", run_lt_debug(1000000, 1000000));
+    println!("LT check 1000001 < 1000000 -> {}", run_lt_debug(1000001, 1000000));
 }
 
 
@@ -190,3 +196,25 @@ fn run_lte_debug(a: u32, b: u32) -> bool {
     builder.ok
 }
 
+fn build_trace_lt_k30(a: u32, b: u32) -> RowMajorMatrix<BabyBear> {
+    const W: usize = 2 + 30;
+    let mut row = vec![BabyBear::ZERO; W];
+    row[0] = BabyBear::new(b);
+    let a_plus_1 = a.saturating_add(1);
+    row[1] = BabyBear::new(a_plus_1);
+    let diff = b.saturating_sub(a_plus_1) as u32;
+    for j in 0..30 {
+        let bit = (diff >> j) & 1;
+        row[2 + j] = BabyBear::from_bool(bit == 1);
+    }
+    RowMajorMatrix::new_row(row)
+}
+
+fn run_lt_debug(a: u32, b: u32) -> bool {
+    let air = GteAirK30;
+    let main = build_trace_lt_k30(a, b);
+    let view = main.as_view();
+    let mut builder = MiniDebugBuilder { main: view, ok: true };
+    air.eval(&mut builder);
+    builder.ok
+}
