@@ -6,7 +6,8 @@ use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_field::PrimeCharacteristicRing; // for ONE constant
 
 // --- Plonky3 proof generation for RangeCheckAirK30 ---
-use p3_uni_stark::{prove, StarkConfig};
+use p3_uni_stark::{prove, verify, StarkConfig};
+
 use p3_baby_bear::{Poseidon2BabyBear};
 use p3_field::extension::BinomialExtensionField;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
@@ -87,6 +88,37 @@ fn build_trace_range_check_k30_many(x_private: u32, min_x: u32, max_x: u32, n_ro
     let proof = prove(&config, &RangeCheckAirK30, trace, &public_values);
     proof
 }
+
+
+/// Verify a STARK proof for min_x <= x_private <= max_x
+fn verify_range_check(
+    proof: &p3_uni_stark::Proof<MyConfig>,
+    min_x: u32,
+    max_x: u32,
+    trace_height: usize,
+    log_final_poly_len: usize,
+) -> bool {
+    // Setup Plonky3 config (must match prover)
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    // Public values: [min_x, max_x]
+    let public_values = vec![Val::new(min_x), Val::new(max_x)];
+
+    // Verify proof
+    let result = verify(&config, &RangeCheckAirK30, proof, &public_values);
+    result.is_ok()
+}
+
 
 // all the comments should be in English
 
@@ -179,14 +211,49 @@ where
 
 
 fn main() {
-    // --- Plonky3 proof generation example ---
-    let x_private = 15;
-    let min_x = 10;
-    let max_x = 20;
-    let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-    let log_final_poly_len = 2; // example: keep small for demo
-    let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
-    println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
+    {
+         // --- Plonky3 proof generation example ---
+        let x_private = 15;
+        let min_x = 10;
+        let max_x = 20;
+        let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
+        let log_final_poly_len = 2; // example: keep small for demo
+        let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+        println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
+
+        // --- Plonky3 proof verification example ---
+        let verified = verify_range_check(&proof, min_x, max_x, trace_height, log_final_poly_len);
+        println!("Plonky3 proof verification result: {}", verified);
+    }
+    {
+        // --- Plonky3 proof generation example (failing case) ---
+        let x_private = 1000000;
+        let min_x = 1000;
+        let max_x = 100000;
+        let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
+        let log_final_poly_len = 2; // example: keep small for demo
+        let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+        println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
+
+        // --- Plonky3 proof verification example (failing case) ---
+        let verified = verify_range_check(&proof, min_x, max_x, trace_height, log_final_poly_len);
+        println!("Plonky3 proof verification result: {}", verified);
+    }
+    {
+        // --- Plonky3 proof generation example (failing case) ---
+        let x_private = 10;
+        let min_x = 1000;
+        let max_x = 100000;
+        let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
+        let log_final_poly_len = 2; // example: keep small for demo
+        let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+        println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
+
+        // --- Plonky3 proof verification example (failing case) ---
+        let verified = verify_range_check(&proof, min_x, max_x, trace_height, log_final_poly_len);
+        println!("Plonky3 proof verification result: {}", verified);
+    }
+
 
     // BabyBear field
     let x = BabyBear::new(100);
