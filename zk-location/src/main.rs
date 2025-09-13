@@ -1,6 +1,6 @@
 use p3_field::Field;
 use p3_baby_bear::BabyBear;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
 use p3_matrix::Matrix;
 use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
 use p3_field::PrimeCharacteristicRing; // for ONE constant
@@ -12,7 +12,7 @@ use p3_baby_bear::{Poseidon2BabyBear};
 use p3_field::extension::BinomialExtensionField;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_fri::{TwoAdicFriPcs, create_test_fri_params};
+use p3_fri::{HidingFriPcs, create_test_fri_params_zk};
 use p3_challenger::DuplexChallenger;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -28,7 +28,7 @@ type Challenge = BinomialExtensionField<Val, 4>;
 type ChallengeMmcs = p3_commit::ExtensionMmcs<Val, Challenge, ValMmcs>;
 type Challenger = DuplexChallenger<Val, Perm, 16, 8>;
 type Dft = p3_dft::Radix2DitParallel<Val>;
-type Pcs = TwoAdicFriPcs<Val, Dft, ValMmcs, ChallengeMmcs>;
+type Pcs = HidingFriPcs<Val, Dft, ValMmcs, ChallengeMmcs, SmallRng>;
 type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
 
 
@@ -43,7 +43,7 @@ fn prove_range_check(
     min_x: u32,
     max_x: u32,
     trace_height: usize,
-    log_final_poly_len: usize,
+    // log_final_poly_len: usize,
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config
     let mut rng = SmallRng::seed_from_u64(1);
@@ -53,39 +53,13 @@ fn prove_range_check(
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
     // Build trace with variable height
     let trace = build_trace_range_check_k30_many(x_private, min_x, max_x, trace_height);
-
-/// Build a trace for RangeCheckAirK30 with variable height (n_rows >= 1, power of two recommended)
-fn build_trace_range_check_k30_many(x_private: u32, min_x: u32, max_x: u32, n_rows: usize) -> RowMajorMatrix<BabyBear> {
-    const W: usize = 3 + 30 + 30;
-    let mut values = Vec::with_capacity(W * n_rows);
-    for _ in 0..n_rows {
-        let mut row = vec![BabyBear::ZERO; W];
-        row[0] = BabyBear::new(x_private);
-        row[1] = BabyBear::new(min_x);
-        row[2] = BabyBear::new(max_x);
-        // bits for x_private - min_x
-        let diff1 = x_private.saturating_sub(min_x);
-        for j in 0..30 {
-            let bit = (diff1 >> j) & 1;
-            row[3 + j] = BabyBear::from_bool(bit == 1);
-        }
-        // bits for max_x - x_private
-        let diff2 = max_x.saturating_sub(x_private);
-        for j in 0..30 {
-            let bit = (diff2 >> j) & 1;
-            row[33 + j] = BabyBear::from_bool(bit == 1);
-        }
-        values.extend(row);
-    }
-    RowMajorMatrix::new(values, W)
-}
 
     // Public values: [min_x, max_x]
     let public_values = vec![Val::new(min_x), Val::new(max_x)];
@@ -101,8 +75,7 @@ fn verify_range_check(
     proof: &p3_uni_stark::Proof<MyConfig>,
     min_x: u32,
     max_x: u32,
-    trace_height: usize,
-    log_final_poly_len: usize,
+    // log_final_poly_len: usize,
 ) -> bool {
     // Setup Plonky3 config (must match prover)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -112,8 +85,8 @@ fn verify_range_check(
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
@@ -142,12 +115,13 @@ impl<F: Field> BaseAir<F> for InsideBoxAir {
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for InsideBoxAir
+impl<AB: AirBuilder + AirBuilderWithPublicValues> Air<AB> for InsideBoxAir
 where
     AB::F: Field + PrimeCharacteristicRing,
 {
     fn eval(&self, builder: &mut AB) {
         let row = builder.main();
+        let pvs_owned: Vec<_> = builder.public_values().iter().cloned().collect();
         // x block
         let x_private = row.get(0, 0).unwrap().into();
         let min_x = row.get(0, 1).unwrap().into();
@@ -160,6 +134,16 @@ where
         let ts_private = row.get(0, 126).unwrap().into();
         let min_ts = row.get(0, 127).unwrap().into();
         let max_ts = row.get(0, 128).unwrap().into();
+
+        // --- public bindings (if provided) ---
+        if pvs_owned.len() >= 6 {
+            builder.assert_eq(row.get(0, 1).unwrap(), pvs_owned[0]);
+            builder.assert_eq(row.get(0, 2).unwrap(), pvs_owned[1]);
+            builder.assert_eq(row.get(0, 64).unwrap(), pvs_owned[2]);
+            builder.assert_eq(row.get(0, 65).unwrap(), pvs_owned[3]);
+            builder.assert_eq(row.get(0, 127).unwrap(), pvs_owned[4]);
+            builder.assert_eq(row.get(0, 128).unwrap(), pvs_owned[5]);
+        }
 
         // --- x range check ---
         let diff1_x = x_private.clone() - min_x.clone();
@@ -312,8 +296,8 @@ fn prove_inside_box(
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
@@ -343,8 +327,7 @@ fn verify_inside_box(
     min_x: u32, max_x: u32,
     min_y: u32, max_y: u32,
     min_ts: u32, max_ts: u32,
-    trace_height: usize,
-    log_final_poly_len: usize,
+    // log_final_poly_len: usize,
 ) -> bool {
     // Setup Plonky3 config (must match prover)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -354,8 +337,8 @@ fn verify_inside_box(
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
-    let fri_params = create_test_fri_params(challenge_mmcs, log_final_poly_len);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params);
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
@@ -388,15 +371,22 @@ impl<F: Field> BaseAir<F> for RangeCheckAirK30 {
     }
 }
 
-impl<AB: AirBuilder> Air<AB> for RangeCheckAirK30
+impl<AB: AirBuilder + AirBuilderWithPublicValues> Air<AB> for RangeCheckAirK30
 where
     AB::F: Field + PrimeCharacteristicRing,
 {
     fn eval(&self, builder: &mut AB) {
         let row = builder.main();
+        let pvs_owned: Vec<_> = builder.public_values().iter().cloned().collect();
         let x_private = row.get(0, 0).unwrap().into();
         let min_x = row.get(0, 1).unwrap().into();
         let max_x = row.get(0, 2).unwrap().into();
+
+        // Bind columns to public inputs if provided
+        if pvs_owned.len() >= 2 {
+            builder.assert_eq(row.get(0, 1).unwrap(), pvs_owned[0]);
+            builder.assert_eq(row.get(0, 2).unwrap(), pvs_owned[1]);
+        }
 
         // --- x_private >= min_x ---
         let diff1 = x_private.clone() - min_x.clone();
@@ -494,7 +484,7 @@ fn main() {
             min_x, max_x,
             min_y, max_y,
             min_ts, max_ts,
-            trace_height, log_final_poly_len
+            // log_final_poly_len
         );
         println!("InsideBoxAir proof verification result: {}", verified);
     }
@@ -505,11 +495,11 @@ fn main() {
         let max_x = 20;
         let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
         let log_final_poly_len = 2; // example: keep small for demo
-        let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+        let proof = prove_range_check(x_private, min_x, max_x, trace_height);
         println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
 
         // --- Plonky3 proof verification example ---
-        let verified = verify_range_check(&proof, min_x, max_x, trace_height, log_final_poly_len);
+    let verified = verify_range_check(&proof, min_x, max_x);
         println!("Plonky3 proof verification result: {}", verified);
     }
     {
@@ -519,11 +509,11 @@ fn main() {
         let max_x = 100000;
         let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
         let log_final_poly_len = 2; // example: keep small for demo
-        let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+        let proof = prove_range_check(x_private, min_x, max_x, trace_height);
         println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
 
         // --- Plonky3 proof verification example (failing case) ---
-        let verified = verify_range_check(&proof, min_x, max_x, trace_height, log_final_poly_len);
+    let verified = verify_range_check(&proof, min_x, max_x);
         println!("Plonky3 proof verification result: {}", verified);
     }
     {
@@ -533,11 +523,11 @@ fn main() {
         let max_x = 100000;
         let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
         let log_final_poly_len = 2; // example: keep small for demo
-        let proof = prove_range_check(x_private, min_x, max_x, trace_height, log_final_poly_len);
+        let proof = prove_range_check(x_private, min_x, max_x, trace_height);
         println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
 
         // --- Plonky3 proof verification example (failing case) ---
-        let verified = verify_range_check(&proof, min_x, max_x, trace_height, log_final_poly_len);
+    let verified = verify_range_check(&proof, min_x, max_x);
         println!("Plonky3 proof verification result: {}", verified);
     }
 
@@ -659,6 +649,11 @@ where
     }
 }
 
+impl<F: Field> AirBuilderWithPublicValues for MiniDebugBuilder<'_, F> {
+    type PublicVar = F;
+    fn public_values(&self) -> &[Self::PublicVar] { &[] }
+}
+
 /// Build a single-row trace for GteAirK30: [a, b, bits(diff)] with K=30.
 fn build_trace_gte_k30(a: u32, b: u32) -> RowMajorMatrix<BabyBear> {
     const W: usize = 2 + 30;
@@ -750,4 +745,30 @@ fn run_lt_debug(a: u32, b: u32) -> bool {
     let mut builder = MiniDebugBuilder { main: view, ok: true };
     air.eval(&mut builder);
     builder.ok
+}
+
+/// Build a trace for RangeCheckAirK30 with variable height (n_rows >= 1, power of two recommended)
+fn build_trace_range_check_k30_many(x_private: u32, min_x: u32, max_x: u32, n_rows: usize) -> RowMajorMatrix<BabyBear> {
+    const W: usize = 3 + 30 + 30;
+    let mut values = Vec::with_capacity(W * n_rows);
+    for _ in 0..n_rows {
+        let mut row = vec![BabyBear::ZERO; W];
+        row[0] = BabyBear::new(x_private);
+        row[1] = BabyBear::new(min_x);
+        row[2] = BabyBear::new(max_x);
+        // bits for x_private - min_x
+        let diff1 = x_private.saturating_sub(min_x);
+        for j in 0..30 {
+            let bit = (diff1 >> j) & 1;
+            row[3 + j] = BabyBear::from_bool(bit == 1);
+        }
+        // bits for max_x - x_private
+        let diff2 = max_x.saturating_sub(x_private);
+        for j in 0..30 {
+            let bit = (diff2 >> j) & 1;
+            row[33 + j] = BabyBear::from_bool(bit == 1);
+        }
+        values.extend(row);
+    }
+    RowMajorMatrix::new(values, W)
 }
