@@ -486,21 +486,6 @@ fn main() {
     }
 
 
-    // BabyBear field
-    let x = BabyBear::new(100);
-    let y = BabyBear::new(101);
-    let sum = x + y;
-    let diff = x - y;
-    let prod = x * y;
-    let quot = x / y;
-
-    println!("x = {:?}", x);
-    println!("y = {:?}", y);
-    println!("sum (x + y) = {:?}", sum);
-    println!("diff (x - y) = {:?}", diff);
-    println!("prod (x * y) = {:?}", prod);
-    println!("quot (x / y) = {:?}", quot);
-
 
     println!("---");
     println!("RangeCheckAirK30: min_x <= x_private <= max_x ---");
