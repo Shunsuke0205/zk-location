@@ -7,6 +7,54 @@ use p3_field::PrimeCharacteristicRing; // for ONE constant
 
 // all the comments should be in English
 
+/// RangeCheckAirK30: proves min_x <= x_private <= max_x using two GteAirK30 constraints.
+pub struct RangeCheckAirK30;
+
+impl<F: Field> BaseAir<F> for RangeCheckAirK30 {
+    fn width(&self) -> usize {
+        // col0: x_private, col1: min_x, col2: max_x
+        // col3..32: bits(x_private - min_x) (K=30)
+        // col33..62: bits(max_x - x_private) (K=30)
+        3 + 30 + 30
+    }
+}
+
+impl<AB: AirBuilder> Air<AB> for RangeCheckAirK30
+where
+    AB::F: Field + PrimeCharacteristicRing,
+{
+    fn eval(&self, builder: &mut AB) {
+        let row = builder.main();
+        let x_private = row.get(0, 0).unwrap().into();
+        let min_x = row.get(0, 1).unwrap().into();
+        let max_x = row.get(0, 2).unwrap().into();
+
+        // --- x_private >= min_x ---
+        let diff1 = x_private.clone() - min_x.clone();
+        let mut acc1 = diff1.clone() - diff1.clone(); // ZERO
+        let mut pow2_1 = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 3 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc1 = acc1 + bit_expr.clone().into() * pow2_1.clone();
+            if j < 29 { pow2_1 = pow2_1.clone() + pow2_1; }
+        }
+        builder.assert_eq(acc1, diff1);
+
+        // --- max_x >= x_private ---
+        let diff2 = max_x.clone() - x_private.clone();
+        let mut acc2 = diff2.clone() - diff2.clone(); // ZERO
+        let mut pow2_2 = AB::F::ONE;
+        for j in 0..30 {
+            let bit_expr = row.get(0, 33 + j).unwrap();
+            builder.assert_bool(bit_expr.clone());
+            acc2 = acc2 + bit_expr.clone().into() * pow2_2.clone();
+            if j < 29 { pow2_2 = pow2_2.clone() + pow2_2; }
+        }
+        builder.assert_eq(acc2, diff2);
+    }
+}
+
 pub struct GteAirK30;
 
 impl<F: Field> BaseAir<F> for GteAirK30 {
@@ -49,14 +97,13 @@ where
 
 fn main() {
     // BabyBear field
-    // let params = BabyBearParameters; // unused in this demo
     let x = BabyBear::new(100);
     let y = BabyBear::new(101);
     let sum = x + y;
     let diff = x - y;
     let prod = x * y;
     let quot = x / y;
-    
+
     println!("x = {:?}", x);
     println!("y = {:?}", y);
     println!("sum (x + y) = {:?}", sum);
@@ -76,7 +123,7 @@ fn main() {
     println!("GT check 1000 > 999 -> {}", run_gt_debug(1000, 999));
     println!("GT check 999 > 999 -> {}", run_gt_debug(999, 999));
     println!("GT check 999 > 1000 -> {}", run_gt_debug(999, 1000));
-    
+
     println!("---");
     println!("LTE check (a <= b) using GteAirK30 with swapped (b, a) ---");
     println!("LTE check 999 <= 1000 -> {}", run_lte_debug(999, 1000));
@@ -88,8 +135,48 @@ fn main() {
     println!("LT check 999999 < 1000000 -> {}", run_lt_debug(999999, 1000000));
     println!("LT check 1000000 < 1000000 -> {}", run_lt_debug(1000000, 1000000));
     println!("LT check 1000001 < 1000000 -> {}", run_lt_debug(1000001, 1000000));
+
+    println!("---");
+    println!("RangeCheckAirK30: min_x <= x_private <= max_x ---");
+    println!("RangeCheck 10 <= 15 <= 20 -> {}", run_range_check_debug(15, 10, 20));
+    println!("RangeCheck 10 <= 10 <= 20 -> {}", run_range_check_debug(10, 10, 20));
+    println!("RangeCheck 10 <= 20 <= 20 -> {}", run_range_check_debug(20, 10, 20));
+    println!("RangeCheck 10 <= 9 <= 20 -> {}", run_range_check_debug(9, 10, 20));
+    println!("RangeCheck 10 <= 21 <= 20 -> {}", run_range_check_debug(21, 10, 20));
 }
 
+
+/// Build a single-row trace for RangeCheckAirK30: [x_private, min_x, max_x, bits1, bits2]
+fn build_trace_range_check_k30(x_private: u32, min_x: u32, max_x: u32) -> RowMajorMatrix<BabyBear> {
+    const W: usize = 3 + 30 + 30;
+    let mut row = vec![BabyBear::ZERO; W];
+    row[0] = BabyBear::new(x_private);
+    row[1] = BabyBear::new(min_x);
+    row[2] = BabyBear::new(max_x);
+    // bits for x_private - min_x
+    let diff1 = x_private.saturating_sub(min_x);
+    for j in 0..30 {
+        let bit = (diff1 >> j) & 1;
+        row[3 + j] = BabyBear::from_bool(bit == 1);
+    }
+    // bits for max_x - x_private
+    let diff2 = max_x.saturating_sub(x_private);
+    for j in 0..30 {
+        let bit = (diff2 >> j) & 1;
+        row[33 + j] = BabyBear::from_bool(bit == 1);
+    }
+    RowMajorMatrix::new_row(row)
+}
+
+/// Run the RangeCheckAirK30 AIR on a 1-row witness; returns true if all constraints hold.
+fn run_range_check_debug(x_private: u32, min_x: u32, max_x: u32) -> bool {
+    let air = RangeCheckAirK30;
+    let main = build_trace_range_check_k30(x_private, min_x, max_x);
+    let view = main.as_view();
+    let mut builder = MiniDebugBuilder { main: view, ok: true };
+    air.eval(&mut builder);
+    builder.ok
+}
 
 
 // ---- Minimal debug builder & helpers for local constraint checking ----
