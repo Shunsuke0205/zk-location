@@ -234,6 +234,68 @@ where
 
 
 
+/// Build a trace for InsideBoxAir with variable height (n_rows >= 1, power of two recommended)
+fn build_trace_inside_box_air(
+    x_private: u32, min_x: u32, max_x: u32,
+    y_private: u32, min_y: u32, max_y: u32,
+    ts_private: u32, min_ts: u32, max_ts: u32,
+    n_rows: usize
+) -> RowMajorMatrix<BabyBear> {
+    const BLOCK: usize = 3 + 30 + 30;
+    const W: usize = 3 * BLOCK;
+    let mut values = Vec::with_capacity(W * n_rows);
+    for _ in 0..n_rows {
+        let mut row = vec![BabyBear::ZERO; W];
+        // x block
+        row[0] = BabyBear::new(x_private);
+        row[1] = BabyBear::new(min_x);
+        row[2] = BabyBear::new(max_x);
+        let diff1_x = x_private.saturating_sub(min_x);
+        for j in 0..30 {
+            let bit = (diff1_x >> j) & 1;
+            row[3 + j] = BabyBear::from_bool(bit == 1);
+        }
+        let diff2_x = max_x.saturating_sub(x_private);
+        for j in 0..30 {
+            let bit = (diff2_x >> j) & 1;
+            row[33 + j] = BabyBear::from_bool(bit == 1);
+        }
+        // y block
+        let base_y = BLOCK;
+        row[base_y + 0] = BabyBear::new(y_private);
+        row[base_y + 1] = BabyBear::new(min_y);
+        row[base_y + 2] = BabyBear::new(max_y);
+        let diff1_y = y_private.saturating_sub(min_y);
+        for j in 0..30 {
+            let bit = (diff1_y >> j) & 1;
+            row[base_y + 3 + j] = BabyBear::from_bool(bit == 1);
+        }
+        let diff2_y = max_y.saturating_sub(y_private);
+        for j in 0..30 {
+            let bit = (diff2_y >> j) & 1;
+            row[base_y + 33 + j] = BabyBear::from_bool(bit == 1);
+        }
+        // ts block
+        let base_ts = 2 * BLOCK;
+        row[base_ts + 0] = BabyBear::new(ts_private);
+        row[base_ts + 1] = BabyBear::new(min_ts);
+        row[base_ts + 2] = BabyBear::new(max_ts);
+        let diff1_ts = ts_private.saturating_sub(min_ts);
+        for j in 0..30 {
+            let bit = (diff1_ts >> j) & 1;
+            row[base_ts + 3 + j] = BabyBear::from_bool(bit == 1);
+        }
+        let diff2_ts = max_ts.saturating_sub(ts_private);
+        for j in 0..30 {
+            let bit = (diff2_ts >> j) & 1;
+            row[base_ts + 33 + j] = BabyBear::from_bool(bit == 1);
+        }
+        values.extend(row);
+    }
+    RowMajorMatrix::new(values, W)
+}
+
+
 
 
 /// RangeCheckAirK30: proves min_x <= x_private <= max_x using two GteAirK30 constraints.
