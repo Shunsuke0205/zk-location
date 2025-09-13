@@ -15,4 +15,5 @@ p3-dft = { path = "../Plonky3/dft" }
 p3-fri = { path = "../Plonky3/fri" }
 p3-poseidon2 = { path = "../Plonky3/poseidon2" }
 p3-symmetric = { path = "../Plonky3/symmetric" }
-rand = "0.8"
+p3-merkle-tree = { path = "../Plonky3/merkle-tree" }
+rand = { version = "0.9.0", default-features = false, features = ["small_rng"] }
