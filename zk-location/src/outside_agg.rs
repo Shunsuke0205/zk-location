@@ -4,12 +4,12 @@ use p3_baby_bear::BabyBear;
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::{MyConfig, Val};
-// use crate::combine; // reserved for future upgrade to (a + 2*b)^7
-use crate::config::make_config_default;
+use crate::combine;
+use crate::config::make_config_with_blowup;
 use p3_matrix::Matrix;
 
-/// Placeholder aggregator AIR: checks parent = left + right (lane-wise) and enforces C consistency.
-/// This is NOT cryptographic; it is to wire the API and tree builder until the recursive verifier is implemented.
+/// Aggregator AIR: parent lanes are computed via a Poseidon-like combine per lane:
+/// parent[i] = (left[i] + 2*right[i])^7 mod p; also enforces C consistency for both children.
 #[allow(dead_code)]
 pub struct OutsideAggAir;
 
@@ -30,36 +30,41 @@ where AB::F: Field + PrimeCharacteristicRing {
         let right_c = (0..4).map(|i| row.get(0, base + 20 + i).unwrap()).collect::<Vec<_>>();
         // Bind PVs: [left(4), right(4), parent(4), C(4), left_C(4), right_C(4)]
         if pvs.len() >= 24 { for i in 0..24 { builder.assert_eq(row.get(0, i).unwrap(), pvs[i]); } }
-        for i in 0..4 { builder.assert_eq(parent[i].clone(), left[i].clone() + right[i].clone()); }
+        // parent = (left + 2*right)^7 lane-wise
+        let two = AB::F::ONE + AB::F::ONE;
+        for i in 0..4 {
+            let mix = left[i].clone() + right[i].clone() * two.clone();
+            let x2 = mix.clone() * mix.clone();
+            let x4 = x2.clone() * x2.clone();
+            let x7 = x4 * x2 * mix;
+            builder.assert_eq(parent[i].clone(), x7);
+        }
         for i in 0..4 { builder.assert_eq(left_c[i].clone(), ccols[i].clone()); }
         for i in 0..4 { builder.assert_eq(right_c[i].clone(), ccols[i].clone()); }
     }
 }
 
-/// Combine two 4-lane digests using BabyBear modulus (lane-wise sum).
+/// Combine two 4-lane digests using BabyBear modulus: (a + 2*b)^7 lane-wise.
 pub fn combine_digests_mod_p(left: [u32; 4], right: [u32; 4]) -> [u32; 4] {
-    const P: u128 = 0x7800_0001;
-    #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
-    [
-        add_p(left[0], right[0]),
-        add_p(left[1], right[1]),
-        add_p(left[2], right[2]),
-        add_p(left[3], right[3]),
-    ]
+    combine::combine_digest(left, right)
 }
 
 #[allow(dead_code)]
 pub fn build_trace_outside_agg(left: [u32;4], right: [u32;4], c: [u32;4]) -> RowMajorMatrix<BabyBear> {
-    let mut row = vec![BabyBear::ZERO; 24];
-    const P: u128 = 0x7800_0001;
-    #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
+    let width = 24;
+    let mut row = vec![BabyBear::ZERO; width];
     for i in 0..4 { row[i] = BabyBear::new(left[i]); }
     for i in 0..4 { row[4+i] = BabyBear::new(right[i]); }
-    for i in 0..4 { row[8+i] = BabyBear::new(add_p(left[i], right[i])); }
+    let parent = combine_digests_mod_p(left, right);
+    for i in 0..4 { row[8+i] = BabyBear::new(parent[i]); }
     for i in 0..4 { row[12+i] = BabyBear::new(c[i]); }
     for i in 0..4 { row[16+i] = BabyBear::new(c[i]); }
     for i in 0..4 { row[20+i] = BabyBear::new(c[i]); }
-    RowMajorMatrix::new_row(row)
+    // Replicate to a small power-of-two height for LDE domain sizing under degree-7 constraints.
+    let height = 8;
+    let mut values = Vec::with_capacity(width * height);
+    for _ in 0..height { values.extend_from_slice(&row); }
+    RowMajorMatrix::new(values, width)
 }
 
 #[allow(dead_code)]
@@ -76,23 +81,20 @@ pub fn flatten_pv_outside_agg(left: [u32;4], right: [u32;4], parent: [u32;4], c:
 
 #[allow(dead_code)]
 pub fn prove_outside_agg(left: [u32;4], right: [u32;4], c: [u32;4]) -> p3_uni_stark::Proof<MyConfig> {
-    let config = make_config_default();
+    // Use higher blowup to handle degree-7 constraints.
+    let config = make_config_with_blowup(6);
 
     let trace = build_trace_outside_agg(left, right, c);
-    const P: u128 = 0x7800_0001;
-    #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
-    let parent = [add_p(left[0], right[0]), add_p(left[1], right[1]), add_p(left[2], right[2]), add_p(left[3], right[3])];
+    let parent = combine_digests_mod_p(left, right);
     let pvs = flatten_pv_outside_agg(left, right, parent, c);
     p3_uni_stark::prove(&config, &OutsideAggAir, trace, &pvs)
 }
 
 #[allow(dead_code)]
 pub fn verify_outside_agg(proof: &p3_uni_stark::Proof<MyConfig>, left: [u32;4], right: [u32;4], c: [u32;4]) -> bool {
-    let config = make_config_default();
+    let config = make_config_with_blowup(6);
 
-    const P: u128 = 0x7800_0001;
-    #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
-    let parent = [add_p(left[0], right[0]), add_p(left[1], right[1]), add_p(left[2], right[2]), add_p(left[3], right[3])];
+    let parent = combine_digests_mod_p(left, right);
     let pvs = flatten_pv_outside_agg(left, right, parent, c);
     p3_uni_stark::verify(&config, &OutsideAggAir, proof, &pvs).is_ok()
 }
