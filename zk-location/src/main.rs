@@ -20,6 +20,7 @@ use rand::SeedableRng;
 mod recursive; // scaffolding for recursive aggregation API
 mod outside_leaf; // single-rectangle outside leaf
 mod outside_agg;  // placeholder digest-only aggregator
+mod outside_agg_reprove; // aggregator that re-proves two leaves in-circuit
 
 
 
@@ -1060,54 +1061,62 @@ where
 
 fn main() {
     {
-        println!("--- Outside-only leaves + placeholder aggregator demo ---");
-        // Shared private (x,y,ts) to bind leaves via digest C
-        let (x_priv, y_priv, ts_priv) = (100u32, 200u32, 123456u32);
+        println!("--- Log-depth aggregation demo: 16 leaves -> 8 -> 4 -> 2 -> 1 ---");
+        // Shared secret and commitment C
+        let (x_priv, y_priv, ts_priv) = (2468u32, 1357u32, 424242u32);
         let c = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
-
-        // Two rectangles where the point is outside in BOTH x and y (as required by the leaf AIR)
-        let rect1 = (1000u32, 1200u32, 5000u32, 6000u32);
-        let rect2 = (3000u32, 4000u32, 8000u32, 9000u32);
-
-        // Prove and verify two outside-only leaves (same C)
-        let leaf1 = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, rect1);
-        let ok1 = outside_leaf::verify_outside_leaf(&leaf1, rect1, c);
-        let leaf2 = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, rect2);
-        let ok2 = outside_leaf::verify_outside_leaf(&leaf2, rect2, c);
-        println!("Leaf verifications: {} and {}", ok1, ok2);
-
-        // Aggregate the two digests with a placeholder parent = left + right (lane-wise), carrying the same C
-        let d1 = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
-        let d2 = d1; // same secret -> same digest
-        let agg = outside_agg::prove_outside_agg(d1, d2, c);
-        let ok_agg = outside_agg::verify_outside_agg(&agg, d1, d2, c);
-        println!("Aggregator verification: {}", ok_agg);
-    }
-    {
-        println!("--- Log-depth placeholder aggregation demo (4 leaves -> 2 -> 1) ---");
-        let (x_priv, y_priv, ts_priv) = (123u32, 456u32, 789u32);
-    let c = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
-        let rects = [
-            (10, 20, 30, 40),
-            (50, 60, 70, 80),
-            (90, 100, 110, 120),
-            (130, 140, 150, 160),
+        // Prepare 16 rectangles where the point is outside
+        let rects: [(u32,u32,u32,u32); 16] = [
+            (10, 20, 30, 40),   (50, 60, 70, 80),
+            (90, 100, 110, 120),(130, 140, 150, 160),
+            (170, 180, 190, 200),(210, 220, 230, 240),
+            (250, 260, 270, 280),(290, 300, 310, 320),
+            (330, 340, 350, 360),(370, 380, 390, 400),
+            (410, 420, 430, 440),(450, 460, 470, 480),
+            (490, 500, 510, 520),(530, 540, 550, 560),
+            (570, 580, 590, 600),(610, 620, 630, 640),
         ];
-        let mut leaf_ok = true;
-        for r in rects { let p = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, r); leaf_ok &= outside_leaf::verify_outside_leaf(&p, r, c); }
-        println!("Leaf verifications (4): {}", leaf_ok);
-    let d = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
-        let left = outside_agg::prove_outside_agg(d, d, c);
-        let right = outside_agg::prove_outside_agg(d, d, c);
-        let ok_left = outside_agg::verify_outside_agg(&left, d, d, c);
-        let ok_right = outside_agg::verify_outside_agg(&right, d, d, c);
-        println!("Level-1 aggregations: left={} right={}", ok_left, ok_right);
-    const PBB: u128 = 0x7800_0001;
-    let add_p = |a: u32, b: u32| -> u32 { let mut s = (a as u128) + (b as u128); if s >= PBB { s -= PBB; } s as u32 };
-    let parent_digest = [add_p(d[0], d[0]), add_p(d[1], d[1]), add_p(d[2], d[2]), add_p(d[3], d[3])];
-        let root = outside_agg::prove_outside_agg(parent_digest, parent_digest, c);
-        let ok_root = outside_agg::verify_outside_agg(&root, parent_digest, parent_digest, c);
-        println!("Root aggregation: {}", ok_root);
+        // Prove/verify all leaves
+        let mut all_ok = true;
+        for r in rects { let p = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, r); all_ok &= outside_leaf::verify_outside_leaf(&p, r, c); }
+        println!("Leaf verifications (16): {}", all_ok);
+        // Compute leaf digest (same for all since secret is the same)
+        let d = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
+        // Level 1: 16 -> 8
+        let mut lvl8: [[u32;4]; 8] = [[0;4]; 8];
+        let mut ok_lvl8 = true;
+        for i in 0..8 {
+            let pr = outside_agg::prove_outside_agg(d, d, c);
+            ok_lvl8 &= outside_agg::verify_outside_agg(&pr, d, d, c);
+            lvl8[i] = outside_agg::combine_digests_mod_p(d, d);
+        }
+        println!("Level-1 (16->8) aggregations: {}", ok_lvl8);
+        // Level 2: 8 -> 4
+        let mut lvl4: [[u32;4]; 4] = [[0;4]; 4];
+        let mut ok_lvl4 = true;
+        for i in 0..4 {
+            let left = lvl8[2*i]; let right = lvl8[2*i+1];
+            let pr = outside_agg::prove_outside_agg(left, right, c);
+            ok_lvl4 &= outside_agg::verify_outside_agg(&pr, left, right, c);
+            lvl4[i] = outside_agg::combine_digests_mod_p(left, right);
+        }
+        println!("Level-2 (8->4) aggregations: {}", ok_lvl4);
+        // Level 3: 4 -> 2
+        let mut lvl2: [[u32;4]; 2] = [[0;4]; 2];
+        let mut ok_lvl2 = true;
+        for i in 0..2 {
+            let left = lvl4[2*i]; let right = lvl4[2*i+1];
+            let pr = outside_agg::prove_outside_agg(left, right, c);
+            ok_lvl2 &= outside_agg::verify_outside_agg(&pr, left, right, c);
+            lvl2[i] = outside_agg::combine_digests_mod_p(left, right);
+        }
+        println!("Level-3 (4->2) aggregations: {}", ok_lvl2);
+        // Level 4: 2 -> 1
+        let left = lvl2[0]; let right = lvl2[1];
+        let pr = outside_agg::prove_outside_agg(left, right, c);
+        let ok_root = outside_agg::verify_outside_agg(&pr, left, right, c);
+        let _root = outside_agg::combine_digests_mod_p(left, right);
+        println!("Level-4 (2->1) root: {}", ok_root);
     }
     {
         println!("--- Combined Outside+Inside Aggregate demo ---");
