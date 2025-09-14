@@ -21,6 +21,7 @@ mod recursive; // scaffolding for recursive aggregation API
 mod outside_leaf; // single-rectangle outside leaf
 mod outside_agg;  // placeholder digest-only aggregator
 mod outside_agg_reprove; // aggregator that re-proves two leaves in-circuit
+mod merkle_path; // PoC Merkle path verifier (non-commutative combine)
 
 
 
@@ -1078,7 +1079,10 @@ fn main() {
         ];
         // Prove/verify all leaves
         let mut all_ok = true;
-        for r in rects { let p = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, r); all_ok &= outside_leaf::verify_outside_leaf(&p, r, c); }
+        for r in rects {
+            let p = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, r);
+            all_ok &= outside_leaf::verify_outside_leaf(&p, r, c);
+        }
         println!("Leaf verifications (16): {}", all_ok);
         // Compute leaf digest (same for all since secret is the same)
         let d = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
@@ -1117,6 +1121,24 @@ fn main() {
         let ok_root = outside_agg::verify_outside_agg(&pr, left, right, c);
         let _root = outside_agg::combine_digests_mod_p(left, right);
         println!("Level-4 (2->1) root: {}", ok_root);
+    }
+    {
+        println!("--- PoC Merkle path verification demo (depth=4, combine: left+3*right mod p) ---");
+        // Use the leaf digest of our secret as a leaf
+        let (x_priv, y_priv, ts_priv) = (111u32, 222u32, 333u32);
+        let leaf = outside_leaf::poseidon2_digest_xyts(x_priv, y_priv, ts_priv);
+        // Build a fake path of depth 4 with arbitrary siblings and directions
+        let siblings: [[u32;4]; 4] = [
+            [1,2,3,4],
+            [5,6,7,8],
+            [9,10,11,12],
+            [13,14,15,16],
+        ];
+        let dirs: [u32;4] = [0, 1, 0, 1]; // mix of left/right order
+        let root = merkle_path::compute_merkle_root_poc(leaf, &siblings, &dirs);
+        let proof = merkle_path::prove_merkle_path(leaf, &siblings, &dirs, root);
+        let ok = merkle_path::verify_merkle_path(&proof, siblings.len(), root);
+        println!("PoC Merkle path verification: {}", ok);
     }
     {
         println!("--- Combined Outside+Inside Aggregate demo ---");

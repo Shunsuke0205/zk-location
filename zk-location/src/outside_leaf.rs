@@ -223,6 +223,30 @@ pub fn prove_outside_leaf(
     p3_uni_stark::prove(&config, &OutsideLeafAir, trace, &pvs)
 }
 
+/// Convenience: prove and return the Poseidon2 digest alongside the proof.
+pub fn prove_outside_leaf_with_digest(
+    x: u32, y: u32, ts: u32,
+    rect: (u32, u32, u32, u32),
+) -> (p3_uni_stark::Proof<MyConfig>, [u32; 4]) {
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
+    let challenger: Challenger = DuplexChallenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    let trace = build_trace_outside_leaf(x, y, ts, rect);
+    let digest = poseidon2_digest_xyts(x, y, ts);
+    let pvs = flatten_pv_outside_leaf(rect, digest);
+    let proof = p3_uni_stark::prove(&config, &OutsideLeafAir, trace, &pvs);
+    (proof, digest)
+}
+
 pub fn verify_outside_leaf(
     proof: &p3_uni_stark::Proof<MyConfig>,
     rect: (u32, u32, u32, u32),

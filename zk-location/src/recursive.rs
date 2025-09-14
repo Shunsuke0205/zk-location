@@ -1,5 +1,6 @@
 //! Recursion scaffolding: statement shapes and accumulator API for pairwise aggregation.
 //! This file intentionally avoids depending on Plonky3 types to keep compile fast.
+#![allow(dead_code)]
 
 /// Axis-aligned rectangle in biased micro-degree coordinates.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

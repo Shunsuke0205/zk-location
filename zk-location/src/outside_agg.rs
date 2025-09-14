@@ -39,6 +39,18 @@ where AB::F: Field + PrimeCharacteristicRing {
     }
 }
 
+/// Combine two 4-lane digests using BabyBear modulus (lane-wise sum).
+pub fn combine_digests_mod_p(left: [u32; 4], right: [u32; 4]) -> [u32; 4] {
+    const P: u128 = 0x7800_0001;
+    #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
+    [
+        add_p(left[0], right[0]),
+        add_p(left[1], right[1]),
+        add_p(left[2], right[2]),
+        add_p(left[3], right[3]),
+    ]
+}
+
 #[allow(dead_code)]
 pub fn build_trace_outside_agg(left: [u32;4], right: [u32;4], c: [u32;4]) -> RowMajorMatrix<BabyBear> {
     let mut row = vec![BabyBear::ZERO; 24];
