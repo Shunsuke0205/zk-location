@@ -877,25 +877,36 @@ fn build_trace_outside_inside_shared_private(
     x_private: u32,
     y_private: u32,
     ts_private: u32,
-    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
-    inside_claim: (u32, u32, u32, u32, u32, u32),
+    global_ts: (u32, u32),
+    outside_claims: &[(u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32),
 ) -> RowMajorMatrix<BabyBear> {
     const CLAIM_SEL: usize = 1;
     const X_BLOCK: usize = 2 + 30 + 30 + 1;
     const Y_BLOCK: usize = 2 + 30 + 30 + 1;
-    const TS_BLOCK: usize = 2 + 30 + 30;
-    const BLOCK_DIM: usize = 2 + 30 + 30;
+    const TS_BLOCK: usize = 2 + 30 + 30; // global
+    const BLOCK_DIM: usize = 2 + 30 + 30; // for x and y inside
 
     let n = outside_claims.len();
-    let width = 3 + n * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK) + 3 * BLOCK_DIM;
+    let width = 3 + TS_BLOCK + n * (CLAIM_SEL + X_BLOCK + Y_BLOCK) + 2 * BLOCK_DIM;
     let mut row = vec![BabyBear::ZERO; width];
     row[0] = BabyBear::new(x_private);
     row[1] = BabyBear::new(y_private);
     row[2] = BabyBear::new(ts_private);
 
+    // Global TS block
+    let (min_ts, max_ts) = global_ts;
+    let base_ts = 3;
+    row[base_ts + 0] = BabyBear::new(min_ts);
+    row[base_ts + 1] = BabyBear::new(max_ts);
+    let diff_ts1 = ts_private.saturating_sub(min_ts);
+    for j in 0..30 { row[base_ts + 2 + j] = BabyBear::from_bool(((diff_ts1 >> j) & 1) == 1); }
+    let diff_ts2 = max_ts.saturating_sub(ts_private);
+    for j in 0..30 { row[base_ts + 32 + j] = BabyBear::from_bool(((diff_ts2 >> j) & 1) == 1); }
+
     // Outside claims
-    for (i, &(min_x, max_x, min_y, max_y, min_ts, max_ts)) in outside_claims.iter().enumerate() {
-        let base = 3 + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+    for (i, &(min_x, max_x, min_y, max_y)) in outside_claims.iter().enumerate() {
+        let base = 3 + TS_BLOCK + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK);
         let x_outside = x_private < min_x || x_private > max_x;
         let t_choose_x = if x_outside { 1u32 } else { 0u32 };
         row[base + 0] = BabyBear::from_bool(t_choose_x == 1);
@@ -926,19 +937,11 @@ fn build_trace_outside_inside_shared_private(
         let sel_y = if y_plus_one <= min_y { 1u32 } else { 0u32 };
         row[base_y + 2 + 30 + 30] = BabyBear::from_bool(sel_y == 1);
 
-        // TS block
-        let base_ts = base + CLAIM_SEL + X_BLOCK + Y_BLOCK;
-        row[base_ts + 0] = BabyBear::new(min_ts);
-        row[base_ts + 1] = BabyBear::new(max_ts);
-        let diff_ts1 = ts_private.saturating_sub(min_ts);
-        for j in 0..30 { row[base_ts + 2 + j] = BabyBear::from_bool(((diff_ts1 >> j) & 1) == 1); }
-        let diff_ts2 = max_ts.saturating_sub(ts_private);
-        for j in 0..30 { row[base_ts + 32 + j] = BabyBear::from_bool(((diff_ts2 >> j) & 1) == 1); }
     }
 
     // Inside claim
-    let (i_min_x, i_max_x, i_min_y, i_max_y, i_min_ts, i_max_ts) = inside_claim;
-    let base_inside = 3 + outside_claims.len() * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+    let (i_min_x, i_max_x, i_min_y, i_max_y) = inside_claim;
+    let base_inside = 3 + TS_BLOCK + outside_claims.len() * (CLAIM_SEL + X_BLOCK + Y_BLOCK);
     // X inside
     row[base_inside + 0] = BabyBear::new(i_min_x);
     row[base_inside + 1] = BabyBear::new(i_max_x);
@@ -954,35 +957,27 @@ fn build_trace_outside_inside_shared_private(
     for j in 0..30 { row[base_in_y + 2 + j] = BabyBear::from_bool(((diff1_y >> j) & 1) == 1); }
     let diff2_y = i_max_y.saturating_sub(y_private);
     for j in 0..30 { row[base_in_y + 32 + j] = BabyBear::from_bool(((diff2_y >> j) & 1) == 1); }
-    // TS inside
-    let base_in_ts = base_inside + 2 * BLOCK_DIM;
-    row[base_in_ts + 0] = BabyBear::new(i_min_ts);
-    row[base_in_ts + 1] = BabyBear::new(i_max_ts);
-    let diff1_ts = ts_private.saturating_sub(i_min_ts);
-    for j in 0..30 { row[base_in_ts + 2 + j] = BabyBear::from_bool(((diff1_ts >> j) & 1) == 1); }
-    let diff2_ts = i_max_ts.saturating_sub(ts_private);
-    for j in 0..30 { row[base_in_ts + 32 + j] = BabyBear::from_bool(((diff2_ts >> j) & 1) == 1); }
 
     RowMajorMatrix::new_row(row)
 }
 
 fn flatten_public_bounds_outside_inside(
-    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
-    inside_claim: (u32, u32, u32, u32, u32, u32),
+    global_ts: (u32, u32),
+    outside_claims: &[(u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32),
 ) -> Vec<Val> {
-    let mut out = Vec::with_capacity(outside_claims.len() * 6 + 6);
-    for &(min_x, max_x, min_y, max_y, min_ts, max_ts) in outside_claims {
+    let mut out = Vec::with_capacity(2 + outside_claims.len() * 4 + 4);
+    out.push(Val::new(global_ts.0));
+    out.push(Val::new(global_ts.1));
+    for &(min_x, max_x, min_y, max_y) in outside_claims {
         out.push(Val::new(min_x));
         out.push(Val::new(max_x));
         out.push(Val::new(min_y));
         out.push(Val::new(max_y));
-        out.push(Val::new(min_ts));
-        out.push(Val::new(max_ts));
     }
-    let (ix0, ix1, iy0, iy1, it0, it1) = inside_claim;
+    let (ix0, ix1, iy0, iy1) = inside_claim;
     out.push(Val::new(ix0)); out.push(Val::new(ix1));
     out.push(Val::new(iy0)); out.push(Val::new(iy1));
-    out.push(Val::new(it0)); out.push(Val::new(it1));
     out
 }
 
@@ -990,8 +985,9 @@ fn prove_outside_inside_shared_private_aggregate(
     x_private: u32,
     y_private: u32,
     ts_private: u32,
-    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
-    inside_claim: (u32, u32, u32, u32, u32, u32),
+    global_ts: (u32, u32),
+    outside_claims: &[(u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32),
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config (ZK PCS)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -1006,16 +1002,17 @@ fn prove_outside_inside_shared_private_aggregate(
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
-    let trace = build_trace_outside_inside_shared_private(x_private, y_private, ts_private, outside_claims, inside_claim);
-    let public_values = flatten_public_bounds_outside_inside(outside_claims, inside_claim);
+    let trace = build_trace_outside_inside_shared_private(x_private, y_private, ts_private, global_ts, outside_claims, inside_claim);
+    let public_values = flatten_public_bounds_outside_inside(global_ts, outside_claims, inside_claim);
     let air = OutsideInsideAggregateAir { n_outside: outside_claims.len() };
     prove(&config, &air, trace, &public_values)
 }
 
 fn verify_outside_inside_shared_private_aggregate(
     proof: &p3_uni_stark::Proof<MyConfig>,
-    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
-    inside_claim: (u32, u32, u32, u32, u32, u32),
+    global_ts: (u32, u32),
+    outside_claims: &[(u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32),
 ) -> bool {
     // Setup Plonky3 config (ZK PCS)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -1030,7 +1027,7 @@ fn verify_outside_inside_shared_private_aggregate(
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
-    let public_values = flatten_public_bounds_outside_inside(outside_claims, inside_claim);
+    let public_values = flatten_public_bounds_outside_inside(global_ts, outside_claims, inside_claim);
     let air = OutsideInsideAggregateAir { n_outside: outside_claims.len() };
     verify(&config, &air, proof, &public_values).is_ok()
 }
