@@ -2,7 +2,7 @@ use p3_field::Field;
 use p3_baby_bear::BabyBear;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
 use p3_matrix::Matrix;
-use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
+use p3_matrix::dense::{RowMajorMatrix};
 use p3_field::PrimeCharacteristicRing; // for ONE constant
 
 // --- Plonky3 proof generation for RangeCheckAirK30 ---
@@ -75,67 +75,6 @@ fn micro_biased_to_lat_deg(micro: u32) -> f64 {
 fn micro_biased_to_lon_deg(micro: u32) -> f64 {
     let signed = micro as i64 - LON_BIAS;
     (signed as f64) / (MICRO_SCALE as f64)
-}
-
-
-
-/// Generate a STARK proof for min_x <= x_private <= max_x
-fn prove_range_check(
-    x_private: u32,
-    min_x: u32,
-    max_x: u32,
-    trace_height: usize,
-) -> p3_uni_stark::Proof<MyConfig> {
-    // Setup Plonky3 config
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
-
-    // Build trace with variable height
-    let trace = build_trace_range_check_k30_many(x_private, min_x, max_x, trace_height);
-
-    // Public values: [min_x, max_x]
-    let public_values = vec![Val::new(min_x), Val::new(max_x)];
-
-    // Generate proof
-    let proof = prove(&config, &RangeCheckAirK30, trace, &public_values);
-    proof
-}
-
-
-/// Verify a STARK proof for min_x <= x_private <= max_x
-fn verify_range_check(
-    proof: &p3_uni_stark::Proof<MyConfig>,
-    min_x: u32,
-    max_x: u32,
-) -> bool {
-    // Setup Plonky3 config (must match prover)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
-
-    // Public values: [min_x, max_x]
-    let public_values = vec![Val::new(min_x), Val::new(max_x)];
-
-    // Verify proof
-    let result = verify(&config, &RangeCheckAirK30, proof, &public_values);
-    result.is_ok()
 }
 
 
@@ -393,123 +332,6 @@ where
             builder.assert_eq(acc2_ts, diff2_ts);
         }
     }
-}
-
-
-/// Build a single-row trace for InsideBoxAggregateAir.
-/// - shared private: (x, y, ts)
-/// - per-claim public bounds: [(min_x, max_x, min_y, max_y, min_ts, max_ts)]
-fn build_trace_inside_box_shared_private(
-    x_private: u32,
-    y_private: u32,
-    ts_private: u32,
-    claims: &[(u32, u32, u32, u32, u32, u32)],
-) -> RowMajorMatrix<BabyBear> {
-    const BLOCK_DIM: usize = 2 + 30 + 30; // per dimension
-    let n = claims.len();
-    let width = 3 + n * 3 * BLOCK_DIM;
-    let mut row = vec![BabyBear::ZERO; width];
-    // shared private header
-    row[0] = BabyBear::new(x_private);
-    row[1] = BabyBear::new(y_private);
-    row[2] = BabyBear::new(ts_private);
-
-    for (i, &(min_x, max_x, min_y, max_y, min_ts, max_ts)) in claims.iter().enumerate() {
-        let base_claim = 3 + i * 3 * BLOCK_DIM;
-
-        // X block
-        let base_x = base_claim;
-        row[base_x + 0] = BabyBear::new(min_x);
-        row[base_x + 1] = BabyBear::new(max_x);
-        let diff1_x = x_private.saturating_sub(min_x);
-        for j in 0..30 { row[base_x + 2 + j] = BabyBear::from_bool(((diff1_x >> j) & 1) == 1); }
-        let diff2_x = max_x.saturating_sub(x_private);
-        for j in 0..30 { row[base_x + 32 + j] = BabyBear::from_bool(((diff2_x >> j) & 1) == 1); }
-
-        // Y block
-        let base_y = base_claim + BLOCK_DIM;
-        row[base_y + 0] = BabyBear::new(min_y);
-        row[base_y + 1] = BabyBear::new(max_y);
-        let diff1_y = y_private.saturating_sub(min_y);
-        for j in 0..30 { row[base_y + 2 + j] = BabyBear::from_bool(((diff1_y >> j) & 1) == 1); }
-        let diff2_y = max_y.saturating_sub(y_private);
-        for j in 0..30 { row[base_y + 32 + j] = BabyBear::from_bool(((diff2_y >> j) & 1) == 1); }
-
-        // TS block
-        let base_ts = base_claim + 2 * BLOCK_DIM;
-        row[base_ts + 0] = BabyBear::new(min_ts);
-        row[base_ts + 1] = BabyBear::new(max_ts);
-        let diff1_ts = ts_private.saturating_sub(min_ts);
-        for j in 0..30 { row[base_ts + 2 + j] = BabyBear::from_bool(((diff1_ts >> j) & 1) == 1); }
-        let diff2_ts = max_ts.saturating_sub(ts_private);
-        for j in 0..30 { row[base_ts + 32 + j] = BabyBear::from_bool(((diff2_ts >> j) & 1) == 1); }
-    }
-
-    RowMajorMatrix::new_row(row)
-}
-
-/// Helper to flatten public values for aggregate proof in the expected order per-claim.
-fn flatten_public_bounds(claims: &[(u32, u32, u32, u32, u32, u32)]) -> Vec<Val> {
-    let mut out = Vec::with_capacity(claims.len() * 6);
-    for &(min_x, max_x, min_y, max_y, min_ts, max_ts) in claims {
-        out.push(Val::new(min_x));
-        out.push(Val::new(max_x));
-        out.push(Val::new(min_y));
-        out.push(Val::new(max_y));
-        out.push(Val::new(min_ts));
-        out.push(Val::new(max_ts));
-    }
-    out
-}
-
-/// Generate a STARK proof aggregating many InsideBox claims with a shared private input.
-fn prove_inside_box_shared_private_aggregate(
-    x_private: u32,
-    y_private: u32,
-    ts_private: u32,
-    claims: &[(u32, u32, u32, u32, u32, u32)],
-) -> p3_uni_stark::Proof<MyConfig> {
-    // Setup Plonky3 config (ZK PCS)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
-
-    let trace = build_trace_inside_box_shared_private(x_private, y_private, ts_private, claims);
-    let public_values = flatten_public_bounds(claims);
-
-    let air = InsideBoxAggregateAir { n_claims: claims.len() };
-    prove(&config, &air, trace, &public_values)
-}
-
-/// Verify a STARK proof for the shared-private aggregate.
-fn verify_inside_box_shared_private_aggregate(
-    proof: &p3_uni_stark::Proof<MyConfig>,
-    claims: &[(u32, u32, u32, u32, u32, u32)],
-) -> bool {
-    // Setup Plonky3 config (ZK PCS)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
-
-    let public_values = flatten_public_bounds(claims);
-    let air = InsideBoxAggregateAir { n_claims: claims.len() };
-    verify(&config, &air, proof, &public_values).is_ok()
 }
 
 
@@ -1371,78 +1193,6 @@ where
 
 fn main() {
     {
-        let a = BabyBear::new(1);
-        let b = BabyBear::new(2);
-        let c = BabyBear::new(0);
-        println!("Test BabyBear field: 0 - 1 = {}", c - a);
-        println!("Test BabyBear field: 1 + 2 = {}", a + b);
-        println!("Test BabyBear field: 0 + 2 = {}", c + b);
-        println!("Test BabyBear field: 0 * 2 = {}", c * b);
-        println!("Test BabyBear field: 1 - 2 = {}", a - b);
-        println!("Test BabyBear field: 0 - 2 = {}", c - b);
-    }
-    {
-        println!("--- InsideBoxAir: 3D box (x, y, ts) range proof demo ---");
-        let x_private = 15;
-        let min_x = 10;
-        let max_x = 20;
-        let y_private = 25;
-        let min_y = 20;
-        let max_y = 30;
-        let ts_private = 1000;
-        let min_ts = 900;
-        let max_ts = 1100;
-        let trace_height = 8;
-        let proof = prove_inside_box(
-            x_private, min_x, max_x,
-            y_private, min_y, max_y,
-            ts_private, min_ts, max_ts,
-            trace_height,
-        );
-        println!("InsideBoxAir proof generated for (x={}, y={}, ts={}) in box:", x_private, y_private, ts_private);
-        println!("  x in [{} , {}]", min_x, max_x);
-        println!("  y in [{} , {}]", min_y, max_y);
-        println!("  ts in [{} , {}]", min_ts, max_ts);
-
-        let verified = verify_inside_box(
-            &proof,
-            min_x, max_x,
-            min_y, max_y,
-            min_ts, max_ts,
-            // log_final_poly_len
-        );
-        println!("InsideBoxAir proof verification result: {}", verified);
-    }
-
-    {
-        println!("--- InsideBoxAggregateAir demo: shared private, multiple public boxes ---");
-        // Shared private point
-        let (x_priv, y_priv, ts_priv) = (15u32, 25u32, 1000u32);
-        // Multiple public boxes; each: (min_x, max_x, min_y, max_y, min_ts, max_ts)
-        let boxes = vec![
-            (10, 20, 20, 30, 900, 1100),
-            (14, 16, 24, 30, 950, 1050),
-            (0, 100, 10, 40, 800, 2000),
-        ];
-
-        let proof = prove_inside_box_shared_private_aggregate(x_priv, y_priv, ts_priv, &boxes);
-        let ok = verify_inside_box_shared_private_aggregate(&proof, &boxes);
-        println!("InsideBoxAggregateAir verification result: {} ({} boxes)", ok, boxes.len());
-    }
-    {
-         // --- Plonky3 proof generation example ---
-        let x_private = 15;
-        let min_x = 10;
-        let max_x = 20;
-        let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-        let proof = prove_range_check(x_private, min_x, max_x, trace_height);
-        println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
-
-        // --- Plonky3 proof verification example ---
-    let verified = verify_range_check(&proof, min_x, max_x);
-        println!("Plonky3 proof verification result: {}", verified);
-    }
-    {
         println!("--- OutsideBoxAggregateAir demo: shared (x,y,ts), multiple public ranges ---");
         let (x_priv, y_priv, ts_priv) = (42u32, 7u32, 1000u32);
         // Global ts range shared by all claims
@@ -1597,36 +1347,6 @@ fn main() {
             ok_combined, outside_boxes.len()
         );
     }
-    #[cfg(not(debug_assertions))]
-    {
-        // --- Plonky3 proof generation example (failing case) ---
-        let x_private = 1000000;
-        let min_x = 1000;
-        let max_x = 100000;
-        let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-        let proof = prove_range_check(x_private, min_x, max_x, trace_height);
-        println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
-
-        // --- Plonky3 proof verification example (failing case) ---
-    let verified = verify_range_check(&proof, min_x, max_x);
-        println!("Plonky3 proof verification result: {}", verified);
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        // --- Plonky3 proof generation example (failing case) ---
-        let x_private = 10;
-        let min_x = 1000;
-        let max_x = 100000;
-        let trace_height = 8; // must be >= 2^log_final_poly_len + blowup
-        let proof = prove_range_check(x_private, min_x, max_x, trace_height);
-        println!("Plonky3 proof generated for {} in [{} , {}]", x_private, min_x, max_x);
-
-        // --- Plonky3 proof verification example (failing case) ---
-    let verified = verify_range_check(&proof, min_x, max_x);
-        println!("Plonky3 proof verification result: {}", verified);
-    }
-
-
 }
 
 
