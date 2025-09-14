@@ -637,6 +637,384 @@ where
     }
 }
 
+/// OutsideInsideAggregateAir: shared private (x,y,ts), N outside claims with (x OR y) outside and ts inside,
+/// plus one inside claim with (x,y,ts) all inside.
+pub struct OutsideInsideAggregateAir { pub n_outside: usize }
+
+impl<F: Field> BaseAir<F> for OutsideInsideAggregateAir {
+    fn width(&self) -> usize {
+        const CLAIM_SEL: usize = 1;
+        const X_BLOCK: usize = 2 + 30 + 30 + 1;
+        const Y_BLOCK: usize = 2 + 30 + 30 + 1;
+        const TS_BLOCK: usize = 2 + 30 + 30;
+        const BLOCK_DIM: usize = 2 + 30 + 30; // per dimension for inside claim
+        3 + self.n_outside * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK) + 3 * BLOCK_DIM
+    }
+}
+
+impl<AB: AirBuilder + AirBuilderWithPublicValues> Air<AB> for OutsideInsideAggregateAir
+where
+    AB::F: Field + PrimeCharacteristicRing,
+{
+    fn eval(&self, builder: &mut AB) {
+        let row = builder.main();
+        let pvs: Vec<_> = builder.public_values().iter().cloned().collect();
+
+        let x_priv = row.get(0, 0).unwrap().into();
+        let y_priv = row.get(0, 1).unwrap().into();
+        let ts_priv = row.get(0, 2).unwrap().into();
+
+        const CLAIM_SEL: usize = 1;
+        const X_BLOCK: usize = 2 + 30 + 30 + 1;
+        const Y_BLOCK: usize = 2 + 30 + 30 + 1;
+        const TS_BLOCK: usize = 2 + 30 + 30;
+        const BLOCK_DIM: usize = 2 + 30 + 30;
+
+        // Outside claims
+        for i in 0..self.n_outside {
+            let base = 3 + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+            let t = row.get(0, base + 0).unwrap();
+            builder.assert_bool(t.clone());
+
+            // X block
+            let base_x = base + CLAIM_SEL;
+            let min_x = row.get(0, base_x + 0).unwrap().into();
+            let max_x = row.get(0, base_x + 1).unwrap().into();
+            let sx = row.get(0, base_x + 2 + 30 + 30).unwrap();
+            builder.assert_bool(sx.clone());
+            if pvs.len() >= (i + 1) * 6 {
+                builder.assert_eq(row.get(0, base_x + 0).unwrap(), pvs[6 * i + 0]);
+                builder.assert_eq(row.get(0, base_x + 1).unwrap(), pvs[6 * i + 1]);
+            }
+            let zero = x_priv.clone() - x_priv.clone();
+            let mut acc_l = zero.clone();
+            let mut p2 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_x + 2 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_l = acc_l + bit.clone().into() * p2.clone();
+                if j < 29 { p2 = p2.clone() + p2; }
+            }
+            let diff_l = min_x.clone() - (x_priv.clone() + AB::F::ONE);
+            builder.assert_eq(t.clone().into() * sx.clone().into() * (acc_l - diff_l), zero.clone());
+            let mut acc_r = zero.clone();
+            let mut p2r = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_x + 2 + 30 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_r = acc_r + bit.clone().into() * p2r.clone();
+                if j < 29 { p2r = p2r.clone() + p2r; }
+            }
+            let one = zero.clone() + AB::F::ONE;
+            let one_minus_sx = one.clone() - sx.clone().into();
+            let diff_r = x_priv.clone() - (max_x.clone() + one.clone());
+            builder.assert_eq(t.clone().into() * one_minus_sx.clone() * (acc_r - diff_r), zero.clone());
+
+            // Y block
+            let base_y = base + CLAIM_SEL + X_BLOCK;
+            let min_y = row.get(0, base_y + 0).unwrap().into();
+            let max_y = row.get(0, base_y + 1).unwrap().into();
+            let sy = row.get(0, base_y + 2 + 30 + 30).unwrap();
+            builder.assert_bool(sy.clone());
+            if pvs.len() >= (i + 1) * 6 {
+                builder.assert_eq(row.get(0, base_y + 0).unwrap(), pvs[6 * i + 2]);
+                builder.assert_eq(row.get(0, base_y + 1).unwrap(), pvs[6 * i + 3]);
+            }
+            let mut acc_ly = y_priv.clone() - y_priv.clone();
+            let mut p2y1 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_y + 2 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_ly = acc_ly + bit.clone().into() * p2y1.clone();
+                if j < 29 { p2y1 = p2y1.clone() + p2y1; }
+            }
+            let diff_ly = min_y.clone() - (y_priv.clone() + AB::F::ONE);
+            let one_minus_t = one.clone() - t.clone().into();
+            builder.assert_eq(one_minus_t.clone() * sy.clone().into() * (acc_ly - diff_ly), y_priv.clone() - y_priv.clone());
+            let mut acc_ry = y_priv.clone() - y_priv.clone();
+            let mut p2y2 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_y + 2 + 30 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_ry = acc_ry + bit.clone().into() * p2y2.clone();
+                if j < 29 { p2y2 = p2y2.clone() + p2y2; }
+            }
+            let one_minus_sy = one.clone() - sy.clone().into();
+            let diff_ry = y_priv.clone() - (max_y.clone() + AB::F::ONE);
+            builder.assert_eq(one_minus_t.clone() * one_minus_sy.clone() * (acc_ry - diff_ry), y_priv.clone() - y_priv.clone());
+
+            // TS block
+            let base_ts = base + CLAIM_SEL + X_BLOCK + Y_BLOCK;
+            let min_ts = row.get(0, base_ts + 0).unwrap().into();
+            let max_ts = row.get(0, base_ts + 1).unwrap().into();
+            if pvs.len() >= (i + 1) * 6 {
+                builder.assert_eq(row.get(0, base_ts + 0).unwrap(), pvs[6 * i + 4]);
+                builder.assert_eq(row.get(0, base_ts + 1).unwrap(), pvs[6 * i + 5]);
+            }
+            let mut acc_ts1 = ts_priv.clone() - ts_priv.clone();
+            let mut p2t1 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_ts + 2 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_ts1 = acc_ts1 + bit.clone().into() * p2t1.clone();
+                if j < 29 { p2t1 = p2t1.clone() + p2t1; }
+            }
+            builder.assert_eq(acc_ts1, ts_priv.clone() - min_ts.clone());
+            let mut acc_ts2 = ts_priv.clone() - ts_priv.clone();
+            let mut p2t2 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_ts + 32 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_ts2 = acc_ts2 + bit.clone().into() * p2t2.clone();
+                if j < 29 { p2t2 = p2t2.clone() + p2t2; }
+            }
+            builder.assert_eq(acc_ts2, max_ts.clone() - ts_priv.clone());
+        }
+
+        // Inside claim (one)
+        let base_inside = 3 + self.n_outside * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+        // Bind PVs for inside claim if provided
+        if pvs.len() >= self.n_outside * 6 + 6 {
+            builder.assert_eq(row.get(0, base_inside + 0).unwrap(), pvs[self.n_outside * 6 + 0]);
+            builder.assert_eq(row.get(0, base_inside + 1).unwrap(), pvs[self.n_outside * 6 + 1]);
+            builder.assert_eq(row.get(0, base_inside + (BLOCK_DIM) + 0).unwrap(), pvs[self.n_outside * 6 + 2]);
+            builder.assert_eq(row.get(0, base_inside + (BLOCK_DIM) + 1).unwrap(), pvs[self.n_outside * 6 + 3]);
+            builder.assert_eq(row.get(0, base_inside + 2 * (BLOCK_DIM) + 0).unwrap(), pvs[self.n_outside * 6 + 4]);
+            builder.assert_eq(row.get(0, base_inside + 2 * (BLOCK_DIM) + 1).unwrap(), pvs[self.n_outside * 6 + 5]);
+        }
+
+        // X inside
+        let min_x_in = row.get(0, base_inside + 0).unwrap().into();
+        let max_x_in = row.get(0, base_inside + 1).unwrap().into();
+        let mut acc1_x = x_priv.clone() - x_priv.clone();
+        let mut p2x1 = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_inside + 2 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc1_x = acc1_x + bit.clone().into() * p2x1.clone();
+            if j < 29 { p2x1 = p2x1.clone() + p2x1; }
+        }
+        builder.assert_eq(acc1_x, x_priv.clone() - min_x_in.clone());
+        let mut acc2_x = x_priv.clone() - x_priv.clone();
+        let mut p2x2 = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_inside + 32 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc2_x = acc2_x + bit.clone().into() * p2x2.clone();
+            if j < 29 { p2x2 = p2x2.clone() + p2x2; }
+        }
+        builder.assert_eq(acc2_x, max_x_in.clone() - x_priv.clone());
+
+        // Y inside
+        let base_in_y = base_inside + BLOCK_DIM;
+        let min_y_in = row.get(0, base_in_y + 0).unwrap().into();
+        let max_y_in = row.get(0, base_in_y + 1).unwrap().into();
+        let mut acc1_y = y_priv.clone() - y_priv.clone();
+        let mut p2y1b = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_in_y + 2 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc1_y = acc1_y + bit.clone().into() * p2y1b.clone();
+            if j < 29 { p2y1b = p2y1b.clone() + p2y1b; }
+        }
+        builder.assert_eq(acc1_y, y_priv.clone() - min_y_in.clone());
+        let mut acc2_y = y_priv.clone() - y_priv.clone();
+        let mut p2y2b = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_in_y + 32 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc2_y = acc2_y + bit.clone().into() * p2y2b.clone();
+            if j < 29 { p2y2b = p2y2b.clone() + p2y2b; }
+        }
+        builder.assert_eq(acc2_y, max_y_in.clone() - y_priv.clone());
+
+        // TS inside
+        let base_in_ts = base_inside + 2 * BLOCK_DIM;
+        let min_ts_in = row.get(0, base_in_ts + 0).unwrap().into();
+        let max_ts_in = row.get(0, base_in_ts + 1).unwrap().into();
+        let mut acc1_ts = ts_priv.clone() - ts_priv.clone();
+        let mut p2t1b = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_in_ts + 2 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc1_ts = acc1_ts + bit.clone().into() * p2t1b.clone();
+            if j < 29 { p2t1b = p2t1b.clone() + p2t1b; }
+        }
+        builder.assert_eq(acc1_ts, ts_priv.clone() - min_ts_in.clone());
+        let mut acc2_ts = ts_priv.clone() - ts_priv.clone();
+        let mut p2t2b = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_in_ts + 32 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc2_ts = acc2_ts + bit.clone().into() * p2t2b.clone();
+            if j < 29 { p2t2b = p2t2b.clone() + p2t2b; }
+        }
+        builder.assert_eq(acc2_ts, max_ts_in.clone() - ts_priv.clone());
+    }
+}
+
+/// Build a single-row trace for OutsideInsideAggregateAir
+fn build_trace_outside_inside_shared_private(
+    x_private: u32,
+    y_private: u32,
+    ts_private: u32,
+    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32, u32, u32),
+) -> RowMajorMatrix<BabyBear> {
+    const CLAIM_SEL: usize = 1;
+    const X_BLOCK: usize = 2 + 30 + 30 + 1;
+    const Y_BLOCK: usize = 2 + 30 + 30 + 1;
+    const TS_BLOCK: usize = 2 + 30 + 30;
+    const BLOCK_DIM: usize = 2 + 30 + 30;
+
+    let n = outside_claims.len();
+    let width = 3 + n * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK) + 3 * BLOCK_DIM;
+    let mut row = vec![BabyBear::ZERO; width];
+    row[0] = BabyBear::new(x_private);
+    row[1] = BabyBear::new(y_private);
+    row[2] = BabyBear::new(ts_private);
+
+    // Outside claims
+    for (i, &(min_x, max_x, min_y, max_y, min_ts, max_ts)) in outside_claims.iter().enumerate() {
+        let base = 3 + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+        let x_outside = x_private < min_x || x_private > max_x;
+        let t_choose_x = if x_outside { 1u32 } else { 0u32 };
+        row[base + 0] = BabyBear::from_bool(t_choose_x == 1);
+
+        // X block
+        let base_x = base + CLAIM_SEL;
+        row[base_x + 0] = BabyBear::new(min_x);
+        row[base_x + 1] = BabyBear::new(max_x);
+        let x_plus_one = x_private.saturating_add(1);
+        let diff_left = min_x.saturating_sub(x_plus_one);
+        for j in 0..30 { row[base_x + 2 + j] = BabyBear::from_bool(((diff_left >> j) & 1) == 1); }
+        let max_x_plus_one = max_x.saturating_add(1);
+        let diff_right = x_private.saturating_sub(max_x_plus_one);
+        for j in 0..30 { row[base_x + 2 + 30 + j] = BabyBear::from_bool(((diff_right >> j) & 1) == 1); }
+        let sel = if x_plus_one <= min_x { 1u32 } else { 0u32 };
+        row[base_x + 2 + 30 + 30] = BabyBear::from_bool(sel == 1);
+
+        // Y block
+        let base_y = base + CLAIM_SEL + X_BLOCK;
+        row[base_y + 0] = BabyBear::new(min_y);
+        row[base_y + 1] = BabyBear::new(max_y);
+        let y_plus_one = y_private.saturating_add(1);
+        let diff_left_y = min_y.saturating_sub(y_plus_one);
+        for j in 0..30 { row[base_y + 2 + j] = BabyBear::from_bool(((diff_left_y >> j) & 1) == 1); }
+        let max_y_plus_one = max_y.saturating_add(1);
+        let diff_right_y = y_private.saturating_sub(max_y_plus_one);
+        for j in 0..30 { row[base_y + 2 + 30 + j] = BabyBear::from_bool(((diff_right_y >> j) & 1) == 1); }
+        let sel_y = if y_plus_one <= min_y { 1u32 } else { 0u32 };
+        row[base_y + 2 + 30 + 30] = BabyBear::from_bool(sel_y == 1);
+
+        // TS block
+        let base_ts = base + CLAIM_SEL + X_BLOCK + Y_BLOCK;
+        row[base_ts + 0] = BabyBear::new(min_ts);
+        row[base_ts + 1] = BabyBear::new(max_ts);
+        let diff_ts1 = ts_private.saturating_sub(min_ts);
+        for j in 0..30 { row[base_ts + 2 + j] = BabyBear::from_bool(((diff_ts1 >> j) & 1) == 1); }
+        let diff_ts2 = max_ts.saturating_sub(ts_private);
+        for j in 0..30 { row[base_ts + 32 + j] = BabyBear::from_bool(((diff_ts2 >> j) & 1) == 1); }
+    }
+
+    // Inside claim
+    let (i_min_x, i_max_x, i_min_y, i_max_y, i_min_ts, i_max_ts) = inside_claim;
+    let base_inside = 3 + outside_claims.len() * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+    // X inside
+    row[base_inside + 0] = BabyBear::new(i_min_x);
+    row[base_inside + 1] = BabyBear::new(i_max_x);
+    let diff1_x = x_private.saturating_sub(i_min_x);
+    for j in 0..30 { row[base_inside + 2 + j] = BabyBear::from_bool(((diff1_x >> j) & 1) == 1); }
+    let diff2_x = i_max_x.saturating_sub(x_private);
+    for j in 0..30 { row[base_inside + 32 + j] = BabyBear::from_bool(((diff2_x >> j) & 1) == 1); }
+    // Y inside
+    let base_in_y = base_inside + BLOCK_DIM;
+    row[base_in_y + 0] = BabyBear::new(i_min_y);
+    row[base_in_y + 1] = BabyBear::new(i_max_y);
+    let diff1_y = y_private.saturating_sub(i_min_y);
+    for j in 0..30 { row[base_in_y + 2 + j] = BabyBear::from_bool(((diff1_y >> j) & 1) == 1); }
+    let diff2_y = i_max_y.saturating_sub(y_private);
+    for j in 0..30 { row[base_in_y + 32 + j] = BabyBear::from_bool(((diff2_y >> j) & 1) == 1); }
+    // TS inside
+    let base_in_ts = base_inside + 2 * BLOCK_DIM;
+    row[base_in_ts + 0] = BabyBear::new(i_min_ts);
+    row[base_in_ts + 1] = BabyBear::new(i_max_ts);
+    let diff1_ts = ts_private.saturating_sub(i_min_ts);
+    for j in 0..30 { row[base_in_ts + 2 + j] = BabyBear::from_bool(((diff1_ts >> j) & 1) == 1); }
+    let diff2_ts = i_max_ts.saturating_sub(ts_private);
+    for j in 0..30 { row[base_in_ts + 32 + j] = BabyBear::from_bool(((diff2_ts >> j) & 1) == 1); }
+
+    RowMajorMatrix::new_row(row)
+}
+
+fn flatten_public_bounds_outside_inside(
+    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32, u32, u32),
+) -> Vec<Val> {
+    let mut out = Vec::with_capacity(outside_claims.len() * 6 + 6);
+    for &(min_x, max_x, min_y, max_y, min_ts, max_ts) in outside_claims {
+        out.push(Val::new(min_x));
+        out.push(Val::new(max_x));
+        out.push(Val::new(min_y));
+        out.push(Val::new(max_y));
+        out.push(Val::new(min_ts));
+        out.push(Val::new(max_ts));
+    }
+    let (ix0, ix1, iy0, iy1, it0, it1) = inside_claim;
+    out.push(Val::new(ix0)); out.push(Val::new(ix1));
+    out.push(Val::new(iy0)); out.push(Val::new(iy1));
+    out.push(Val::new(it0)); out.push(Val::new(it1));
+    out
+}
+
+fn prove_outside_inside_shared_private_aggregate(
+    x_private: u32,
+    y_private: u32,
+    ts_private: u32,
+    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32, u32, u32),
+) -> p3_uni_stark::Proof<MyConfig> {
+    // Setup Plonky3 config (ZK PCS)
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    let trace = build_trace_outside_inside_shared_private(x_private, y_private, ts_private, outside_claims, inside_claim);
+    let public_values = flatten_public_bounds_outside_inside(outside_claims, inside_claim);
+    let air = OutsideInsideAggregateAir { n_outside: outside_claims.len() };
+    prove(&config, &air, trace, &public_values)
+}
+
+fn verify_outside_inside_shared_private_aggregate(
+    proof: &p3_uni_stark::Proof<MyConfig>,
+    outside_claims: &[(u32, u32, u32, u32, u32, u32)],
+    inside_claim: (u32, u32, u32, u32, u32, u32),
+) -> bool {
+    // Setup Plonky3 config (ZK PCS)
+    let mut rng = SmallRng::seed_from_u64(1);
+    let perm = Perm::new_from_rng_128(&mut rng);
+    let hash = MyHash::new(perm.clone());
+    let compress = MyCompress::new(perm.clone());
+    let val_mmcs = ValMmcs::new(hash, compress);
+    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
+    let dft = Dft::default();
+    let fri_params = create_test_fri_params_zk(challenge_mmcs);
+    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
+    let challenger = Challenger::new(perm);
+    let config = MyConfig::new(pcs, challenger);
+
+    let public_values = flatten_public_bounds_outside_inside(outside_claims, inside_claim);
+    let air = OutsideInsideAggregateAir { n_outside: outside_claims.len() };
+    verify(&config, &air, proof, &public_values).is_ok()
+}
 /// Build a single-row trace for OutsideBoxAggregateAir.
 fn build_trace_outside_box_shared_private(
     x_private: u32,
@@ -1049,6 +1427,20 @@ fn main() {
         let proof = prove_outside_box_shared_private_aggregate(x_priv, y_priv, ts_priv, &claims);
         let ok = verify_outside_box_shared_private_aggregate(&proof, &claims);
         println!("OutsideBoxAggregateAir verification result: {} ({} claims)", ok, claims.len());
+    }
+    {
+        println!("--- Combined Outside+Inside Aggregate demo ---");
+        let (x_priv, y_priv, ts_priv) = (42u32, 7u32, 1000u32);
+        // Outside claims (x OR y outside, ts inside)
+        let outside = vec![
+            (10, 20, 10, 20, 900, 1100),  // x right, y below
+            (43, 60, 0, 5, 950, 1050),    // x left, y above
+        ];
+        // Inside claim (x,y,ts inside)
+        let inside = (0u32, 100u32, 0u32, 50u32, 800u32, 2000u32);
+        let proof = prove_outside_inside_shared_private_aggregate(x_priv, y_priv, ts_priv, &outside, inside);
+        let ok = verify_outside_inside_shared_private_aggregate(&proof, &outside, inside);
+        println!("Outside+Inside aggregate verification: {} ({} outside + 1 inside)", ok, outside.len());
     }
     #[cfg(not(debug_assertions))]
     {
