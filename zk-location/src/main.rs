@@ -12,10 +12,10 @@ use p3_baby_bear::{Poseidon2BabyBear};
 use p3_field::extension::BinomialExtensionField;
 use p3_symmetric::{PaddingFreeSponge, TruncatedPermutation};
 use p3_merkle_tree::MerkleTreeMmcs;
-use p3_fri::{HidingFriPcs, create_test_fri_params_zk};
+use p3_fri::HidingFriPcs;
 use p3_challenger::DuplexChallenger;
 use rand::rngs::SmallRng;
-use rand::SeedableRng;
+// use rand::SeedableRng; // no longer needed here after config refactor
 use std::time::Instant;
 
 mod recursive; // scaffolding for recursive aggregation API
@@ -23,6 +23,7 @@ mod outside_leaf; // single-rectangle outside leaf
 mod outside_agg;  // placeholder digest-only aggregator
 mod outside_agg_reprove; // aggregator that re-proves two leaves in-circuit
 mod merkle_path; // PoC Merkle path verifier (non-commutative combine)
+mod config; // common config helpers (PCS/Challenger/Fri)
 
 
 
@@ -679,17 +680,7 @@ fn prove_outside_inside_shared_private_aggregate(
     inside_claim: (u32, u32, u32, u32),
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config (ZK PCS)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = crate::config::make_config_default();
 
     let trace = build_trace_outside_inside_shared_private(x_private, y_private, ts_private, global_ts, outside_claims, inside_claim);
     let public_values = flatten_public_bounds_outside_inside(global_ts, outside_claims, inside_claim);
@@ -704,17 +695,7 @@ fn verify_outside_inside_shared_private_aggregate(
     inside_claim: (u32, u32, u32, u32),
 ) -> bool {
     // Setup Plonky3 config (ZK PCS)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = crate::config::make_config_default();
 
     let public_values = flatten_public_bounds_outside_inside(global_ts, outside_claims, inside_claim);
     let air = OutsideInsideAggregateAir { n_outside: outside_claims.len() };
@@ -817,17 +798,7 @@ fn prove_outside_box_shared_private_aggregate(
     claims: &[(u32, u32, u32, u32)],
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config (ZK PCS)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = crate::config::make_config_default();
 
     let trace = build_trace_outside_box_shared_private(x_private, y_private, ts_private, global_ts, claims);
     let public_values = flatten_public_bounds_outside(global_ts, claims);
@@ -841,17 +812,7 @@ fn verify_outside_box_shared_private_aggregate(
     claims: &[(u32, u32, u32, u32)],
 ) -> bool {
     // Setup Plonky3 config (ZK PCS)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = crate::config::make_config_default();
 
     let public_values = flatten_public_bounds_outside(global_ts, claims);
     let air = OutsideBoxAggregateAir { n_claims: claims.len() };
@@ -932,17 +893,7 @@ fn prove_inside_box(
     trace_height: usize,
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = crate::config::make_config_default();
 
     // Build trace
     let trace = build_trace_inside_box_air(
@@ -972,17 +923,7 @@ fn verify_inside_box(
     min_ts: u32, max_ts: u32,
 ) -> bool {
     // Setup Plonky3 config (must match prover)
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger = Challenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = crate::config::make_config_default();
 
     // Public values: [min_x, max_x, min_y, max_y, min_ts, max_ts]
     let public_values = vec![

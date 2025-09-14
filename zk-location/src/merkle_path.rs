@@ -4,12 +4,8 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 
-use crate::{Challenger, Dft, MyCompress, MyConfig, MyHash, Perm, Pcs, Val, ValMmcs};
-use p3_challenger::DuplexChallenger;
-use p3_fri::FriParameters;
-use p3_merkle_tree::MerkleTreeMmcs;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use crate::{MyConfig, Val};
+use crate::config::make_config_with_blowup;
 
 /// Non-commutative lane-wise combine used for PoC Merkle hashing inside the AIR:
 /// parent = left + 3 * right  (mod p)
@@ -176,18 +172,7 @@ pub fn prove_merkle_path(
 ) -> p3_uni_stark::Proof<MyConfig> {
     let depth = siblings.len();
     let (_height, blowup_bits) = select_poc_params(depth);
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
-    let dft = Dft::default();
-    // Heuristic: ensure blowup_bits >= log_quotient_degree (empirical upper bound grows with depth).
-    let fri_params = FriParameters { log_blowup: blowup_bits, log_final_poly_len: 0, num_queries: 2, proof_of_work_bits: 1, mmcs: challenge_mmcs };
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger: Challenger = DuplexChallenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = make_config_with_blowup(blowup_bits);
 
     let trace = build_trace_merkle_path(leaf, siblings, dirs);
     let pvs = flatten_pv_merkle_root(root);
@@ -201,20 +186,37 @@ pub fn verify_merkle_path(
     root: [u32; 4],
 ) -> bool {
     let (_height, blowup_bits) = select_poc_params(depth);
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
-    let dft = Dft::default();
-    // Must match prover's blowup bits
-    let fri_params = FriParameters { log_blowup: blowup_bits, log_final_poly_len: 0, num_queries: 2, proof_of_work_bits: 1, mmcs: challenge_mmcs };
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger: Challenger = DuplexChallenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = make_config_with_blowup(blowup_bits);
 
     let pvs = flatten_pv_merkle_root(root);
     let air = MerklePathAir { depth };
     p3_uni_stark::verify(&config, &air, proof, &pvs).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merkle_poc_happy_path_depth4() {
+        let leaf = [11, 22, 33, 44];
+        let siblings = vec![[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16]];
+        let dirs = vec![0,1,0,1];
+        let root = compute_merkle_root_poc(leaf, &siblings, &dirs);
+        let proof = prove_merkle_path(leaf, &siblings, &dirs, root);
+        assert!(verify_merkle_path(&proof, siblings.len(), root));
+    }
+
+    #[test]
+    fn merkle_poc_detects_wrong_dir() {
+        let leaf = [1, 1, 1, 1];
+        let siblings = vec![[2,2,2,2],[3,3,3,3]];
+        let dirs = vec![0,0];
+        let root = compute_merkle_root_poc(leaf, &siblings, &dirs);
+        let proof = prove_merkle_path(leaf, &siblings, &dirs, root);
+        // Flip one direction; verify should fail
+        let wrong_dirs = vec![1,0];
+        let wrong_root = compute_merkle_root_poc(leaf, &siblings, &wrong_dirs);
+        assert!(!verify_merkle_path(&proof, siblings.len(), wrong_root));
+    }
 }
