@@ -1,5 +1,3 @@
-use std::fs::File;
-
 use p3_field::Field;
 use p3_baby_bear::BabyBear;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
@@ -36,6 +34,48 @@ type MyConfig = StarkConfig<Pcs, Challenge, Challenger>;
 
 
 // all the comments should be in English
+
+// --- Micro-degree helpers with unsigned bias (API boundary conversions) ---
+// SCALE: 1e6 (micro-degrees)
+// Latitude bias: +90_000_000 to map [-90e6, +90e6] -> [0, 180e6] (fits in < 2^28)
+// Longitude bias: +180_000_000 to map [-180e6, +180e6] -> [0, 360e6] (fits in < 2^29)
+#[allow(dead_code)]
+const MICRO_SCALE: i64 = 1_000_000;
+#[allow(dead_code)]
+const LAT_BIAS: i64 = 90_000_000;
+#[allow(dead_code)]
+const LON_BIAS: i64 = 180_000_000;
+
+#[allow(dead_code)]
+#[inline]
+fn lat_deg_to_micro_biased(lat_deg: f64) -> u32 {
+    let scaled = (lat_deg * MICRO_SCALE as f64).round() as i64;
+    let clamped = scaled.clamp(-LAT_BIAS, LAT_BIAS);
+    (clamped + LAT_BIAS) as u32
+}
+
+#[allow(dead_code)]
+#[inline]
+fn lon_deg_to_micro_biased(lon_deg: f64) -> u32 {
+    let scaled = (lon_deg * MICRO_SCALE as f64).round() as i64;
+    let half_turn = LON_BIAS;
+    let clamped = scaled.clamp(-half_turn, half_turn);
+    (clamped + LON_BIAS) as u32
+}
+
+#[allow(dead_code)]
+#[inline]
+fn micro_biased_to_lat_deg(micro: u32) -> f64 {
+    let signed = micro as i64 - LAT_BIAS;
+    (signed as f64) / (MICRO_SCALE as f64)
+}
+
+#[allow(dead_code)]
+#[inline]
+fn micro_biased_to_lon_deg(micro: u32) -> f64 {
+    let signed = micro as i64 - LON_BIAS;
+    (signed as f64) / (MICRO_SCALE as f64)
+}
 
 
 
