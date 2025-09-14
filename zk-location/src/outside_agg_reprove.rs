@@ -5,7 +5,8 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 
 use crate::{MyConfig, Val};
-use crate::config::make_config_default;
+use crate::config::make_config_with_blowup;
+use crate::combine; // for off-circuit digest combine
 
 /// Aggregator that re-proves two OutsideLeaf statements in-circuit for the same (x,y,ts),
 /// binds a shared commitment C, and enforces parent = left + right (lane-wise, mod p).
@@ -170,13 +171,22 @@ where
             for k in 0..4 { builder.assert_eq(row.get(0, base_c + k).unwrap(), pvs[8 + k]); }
         }
 
-        // Digest lanes: left,right,parent columns and constraint parent = left + right
+        // Digest lanes: left,right,parent columns and constraint parent = (left + 2*right)^7 (lane-wise)
         let base_d = base_c + 4;
         for k in 0..4 {
             let l = row.get(0, base_d + k).unwrap();
             let r = row.get(0, base_d + 4 + k).unwrap();
             let p = row.get(0, base_d + 8 + k).unwrap();
-            builder.assert_eq(p.clone(), l.clone() + r.clone());
+            // Build constants 1 and 2 as Expr
+            let zero = l.clone() - l.clone();
+            let one = zero.clone() + AB::F::ONE;
+            let two = one.clone() + one.clone();
+            let mix = l.clone() + r.clone() * two.clone();
+            // x^7 = x * x^2 * x^4
+            let x2 = mix.clone() * mix.clone();
+            let x4 = x2.clone() * x2.clone();
+            let x7 = x4 * x2 * mix;
+            builder.assert_eq(p.clone(), x7);
         }
     }
 }
@@ -234,12 +244,16 @@ pub fn build_trace_outside_agg_reprove(
     let base_d = base_c + 4;
     for k in 0..4 { row[base_d + k] = BabyBear::new(left_digest[k]); }
     for k in 0..4 { row[base_d + 4 + k] = BabyBear::new(right_digest[k]); }
-    // parent = left + right (mod p)
-    const P: u128 = 0x7800_0001;
-    #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
-    for k in 0..4 { row[base_d + 8 + k] = BabyBear::new(add_p(left_digest[k], right_digest[k])); }
+    // parent = (left + 2*right)^7 lane-wise
+    let parent = combine::combine_digest(left_digest, right_digest);
+    for k in 0..4 { row[base_d + 8 + k] = BabyBear::new(parent[k]); }
 
-    RowMajorMatrix::new_row(row)
+    // Replicate single logical row to a small power-of-two height for LDE sizing stability under degree-7 constraints.
+    let height = 8;
+    let width = row.len();
+    let mut values = Vec::with_capacity(width * height);
+    for _ in 0..height { values.extend_from_slice(&row); }
+    RowMajorMatrix::new(values, width)
 }
 
 pub fn flatten_pv_outside_agg_reprove(
@@ -265,7 +279,8 @@ pub fn prove_outside_agg_reprove(
     right: (u32, u32, u32, u32),
     c: [u32; 4],
 ) -> p3_uni_stark::Proof<MyConfig> {
-    let config = make_config_default();
+    // Use higher blowup to accommodate degree-7 constraints
+    let config = make_config_with_blowup(6);
 
     // Child digests are Poseidon2(x,y,ts) off-circuit (same for both children since secret is shared)
     let left_digest = crate::outside_leaf::poseidon2_digest_xyts(x, y, ts);
@@ -282,7 +297,8 @@ pub fn verify_outside_agg_reprove(
     c: [u32; 4],
     x: u32, y: u32, ts: u32,
 ) -> bool {
-    let config = make_config_default();
+    // Use matching blowup as prover
+    let config = make_config_with_blowup(6);
 
     // Recompute child digests off-circuit consistently for PVs
     let left_digest = crate::outside_leaf::poseidon2_digest_xyts(x, y, ts);
