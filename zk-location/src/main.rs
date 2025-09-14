@@ -1473,6 +1473,130 @@ fn main() {
         let ok = verify_outside_inside_shared_private_aggregate(&proof, global_ts, &outside, inside);
         println!("Outside+Inside aggregate verification: {} ({} outside + 1 inside)", ok, outside.len());
     }
+    {
+        println!("--- Tokyo micro-degree demo: inside rectangle + 6 outside boxes ---");
+        // Assume x = longitude (E), y = latitude (N). Convert degrees to micro-biased u32.
+        let tokyo_pt_lat = 35.681236_f64; // Tokyo Station
+        let tokyo_pt_lon = 139.767125_f64;
+        let y_priv = lat_deg_to_micro_biased(tokyo_pt_lat);
+        let x_priv = lon_deg_to_micro_biased(tokyo_pt_lon);
+        let ts_priv: u32 = 1_700_000_000; // arbitrary timestamp within global range below
+        println!(
+            "Private point (deg): lon={:.6}, lat={:.6}",
+            tokyo_pt_lon, tokyo_pt_lat
+        );
+
+        // Define a rectangle that contains mainland Tokyo (approx):
+        let lat_min_deg = 35.20; let lat_max_deg = 35.95;
+        let lon_min_deg = 139.40; let lon_max_deg = 139.95;
+        let y_min = lat_deg_to_micro_biased(lat_min_deg);
+        let y_max = lat_deg_to_micro_biased(lat_max_deg);
+        let x_min = lon_deg_to_micro_biased(lon_min_deg);
+        let x_max = lon_deg_to_micro_biased(lon_max_deg);
+        println!(
+            "Inside box (deg): lon in [{:.4}, {:.4}], lat in [{:.4}, {:.4}]",
+            lon_min_deg, lon_max_deg, lat_min_deg, lat_max_deg
+        );
+
+        // Inside proof for Tokyo rectangle (x,y,ts inside)
+        let min_ts = 1_600_000_000; let max_ts = 1_800_000_000; // global-ish window
+        let proof_inside = prove_inside_box(
+            x_priv, x_min, x_max,
+            y_priv, y_min, y_max,
+            ts_priv, min_ts, max_ts,
+            8,
+        );
+        let ok_inside = verify_inside_box(&proof_inside, x_min, x_max, y_min, y_max, min_ts, max_ts);
+        println!("Tokyo inside-rectangle verification: {}", ok_inside);
+
+        // Build 6 outside rectangles that cover the frame outside the Tokyo rectangle.
+        // Frame (degrees)
+        let frame_lat_min = 34.0; let frame_lat_max = 37.0;
+        let frame_lon_min = 138.0; let frame_lon_max = 141.0;
+        let eps = 0.01; // 0.01 degree margin
+        let north_lat_min = (lat_max_deg + eps).min(frame_lat_max); // north band starts just above tokyo
+        let south_lat_max = (lat_min_deg - eps).max(frame_lat_min); // south band ends just below tokyo
+        let west_lon_max = (lon_min_deg - eps).max(frame_lon_min);  // west band
+        let east_lon_min = (lon_max_deg + eps).min(frame_lon_max);  // east band
+        println!("Outside boxes (deg):");
+        println!(
+            "  North band   lon:[{:.2},{:.2}] lat:[{:.2},{:.2}]",
+            frame_lon_min, frame_lon_max, north_lat_min, frame_lat_max
+        );
+        println!(
+            "  South band   lon:[{:.2},{:.2}] lat:[{:.2},{:.2}]",
+            frame_lon_min, frame_lon_max, frame_lat_min, south_lat_max
+        );
+        println!(
+            "  West band    lon:[{:.2},{:.2}] lat:[{:.2},{:.2}]",
+            frame_lon_min, west_lon_max, lat_min_deg, lat_max_deg
+        );
+        println!(
+            "  East band    lon:[{:.2},{:.2}] lat:[{:.2},{:.2}]",
+            east_lon_min, frame_lon_max, lat_min_deg, lat_max_deg
+        );
+        println!(
+            "  NW corner    lon:[{:.2},{:.2}] lat:[{:.2},{:.2}]",
+            frame_lon_min, west_lon_max, north_lat_min, frame_lat_max
+        );
+        println!(
+            "  SE corner    lon:[{:.2},{:.2}] lat:[{:.2},{:.2}]",
+            east_lon_min, frame_lon_max, frame_lat_min, south_lat_max
+        );
+
+        // 6 Outside rectangles (min_x, max_x, min_y, max_y) in biased micro-units
+        let (fx_min, fx_max) = (lon_deg_to_micro_biased(frame_lon_min), lon_deg_to_micro_biased(frame_lon_max));
+        let (fy_min, fy_max) = (lat_deg_to_micro_biased(frame_lat_min), lat_deg_to_micro_biased(frame_lat_max));
+        let (nx_min, nx_max) = (fx_min, fx_max);
+        let (ny_min, ny_max) = (lat_deg_to_micro_biased(north_lat_min), fy_max);
+        let (sx_min, sx_max) = (fx_min, fx_max);
+        let (sy_min, sy_max) = (fy_min, lat_deg_to_micro_biased(south_lat_max));
+        let (wx_min, wx_max) = (fx_min, lon_deg_to_micro_biased(west_lon_max));
+        let (wy_min, wy_max) = (y_min, y_max);
+        let (ex_min, ex_max) = (lon_deg_to_micro_biased(east_lon_min), fx_max);
+        let (ey_min, ey_max) = (y_min, y_max);
+        // Corners:
+        let (nwx_min, nwx_max) = (fx_min, lon_deg_to_micro_biased(west_lon_max));
+        let (nwy_min, nwy_max) = (lat_deg_to_micro_biased(north_lat_min), fy_max);
+        let (sex_min, sex_max) = (lon_deg_to_micro_biased(east_lon_min), fx_max);
+        let (sey_min, sey_max) = (fy_min, lat_deg_to_micro_biased(south_lat_max));
+
+        let outside_boxes: Vec<(u32, u32, u32, u32)> = vec![
+            // North band
+            (nx_min, nx_max, ny_min, ny_max),
+            // South band
+            (sx_min, sx_max, sy_min, sy_max),
+            // West band
+            (wx_min, wx_max, wy_min, wy_max),
+            // East band
+            (ex_min, ex_max, ey_min, ey_max),
+            // Northwest corner
+            (nwx_min, nwx_max, nwy_min, nwy_max),
+            // Southeast corner
+            (sex_min, sex_max, sey_min, sey_max),
+        ];
+
+        // Global TS for outside-aggregate
+        let global_ts = (min_ts, max_ts);
+        let proof_outside = prove_outside_box_shared_private_aggregate(
+            x_priv, y_priv, ts_priv, global_ts, &outside_boxes
+        );
+        let ok_outside = verify_outside_box_shared_private_aggregate(&proof_outside, global_ts, &outside_boxes);
+        println!("Tokyo 6-outside-boxes verification: {} ({} boxes)", ok_outside, outside_boxes.len());
+
+        // Combined aggregate (outside OR + inside) using the same rectangles and TS
+        let inside_claim = (x_min, x_max, y_min, y_max);
+        let proof_combined = prove_outside_inside_shared_private_aggregate(
+            x_priv, y_priv, ts_priv, global_ts, &outside_boxes, inside_claim
+        );
+        let ok_combined = verify_outside_inside_shared_private_aggregate(
+            &proof_combined, global_ts, &outside_boxes, inside_claim
+        );
+        println!(
+            "Tokyo combined aggregate verification: {} ({} outside + 1 inside)",
+            ok_combined, outside_boxes.len()
+        );
+    }
     #[cfg(not(debug_assertions))]
     {
         // --- Plonky3 proof generation example (failing case) ---
