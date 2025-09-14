@@ -1,8 +1,10 @@
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
 use p3_baby_bear::BabyBear;
-use p3_field::{Field, PrimeCharacteristicRing};
+use p3_field::{Field, PrimeCharacteristicRing, PrimeField64};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
+use p3_symmetric::Permutation;
+use p3_baby_bear::default_babybear_poseidon2_16;
 
 use crate::{
     Challenger, Dft, MyCompress, MyConfig, MyHash, Perm, Pcs, Val, ValMmcs,
@@ -14,37 +16,26 @@ use p3_merkle_tree::MerkleTreeMmcs;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-/// Simple linear digest over (x,y,ts) to bind leaves together.
-/// Arithmetic is performed modulo BabyBear prime to match in-AIR field math.
+
+/// Poseidon2-based 4-lane commitment over (x,y,ts) with a domain tag.
+/// This is deterministic and uses BabyBear Poseidon2-16 with fixed constants.
 #[inline]
-pub fn digest_xyts(x: u32, y: u32, ts: u32) -> [u32; 4] {
-    const P: u128 = 0x7800_0001; // BabyBear prime
-    #[inline]
-    fn add_mod(a: u128, b: u128) -> u128 { let mut s = a + b; if s >= P { s -= P; } s }
-    #[inline]
-    fn mul_mod(a: u128, b: u128) -> u128 { let m = a * b; let r = m % P; r }
-
-    let x128 = x as u128;
-    let y128 = y as u128;
-    let ts128 = ts as u128;
-
-    let d0 = {
-        let t = add_mod(x128, add_mod(mul_mod(3, y128), add_mod(mul_mod(5, ts128), 0x9E37_79B9 as u128)));
-        t as u32
-    };
-    let d1 = {
-        let t = add_mod(y128, add_mod(ts128, 0x85EB_CA6B as u128));
-        t as u32
-    };
-    let d2 = {
-        let t = add_mod(ts128, add_mod(x128, 0xC2B2_AE35 as u128));
-        t as u32
-    };
-    let d3 = {
-        let t = add_mod(d0 as u128, add_mod(d1 as u128, add_mod(d2 as u128, 0x27D4_EB2D as u128)));
-        t as u32
-    };
-    [d0, d1, d2, d3]
+pub fn poseidon2_digest_xyts(x: u32, y: u32, ts: u32) -> [u32; 4] {
+    let mut state = [BabyBear::ZERO; 16];
+    // Domain separation tag for zk-location v0
+    state[0] = BabyBear::from_u32(0x5A5A_AA55);
+    state[1] = BabyBear::from_u32(x);
+    state[2] = BabyBear::from_u32(y);
+    state[3] = BabyBear::from_u32(ts);
+    let perm = default_babybear_poseidon2_16();
+    let mut st = state;
+    perm.permute_mut(&mut st);
+    [
+        st[0].as_canonical_u64() as u32,
+        st[1].as_canonical_u64() as u32,
+        st[2].as_canonical_u64() as u32,
+        st[3].as_canonical_u64() as u32,
+    ]
 }
 
 /// AIR for a single outside-rectangle proof with a row-local commitment digest C.
@@ -77,7 +68,7 @@ where
         // Secrets
         let x = row.get(0, 0).unwrap().into();
         let y = row.get(0, 1).unwrap().into();
-        let ts = row.get(0, 2).unwrap().into();
+        let _ts = row.get(0, 2).unwrap();
 
         // X block
         let base_x = 3;
@@ -149,26 +140,11 @@ where
         let diff_ry = y.clone() - (max_y.clone() + AB::F::ONE);
         builder.assert_eq(one_minus_sy * (acc_ry - diff_ry), y.clone() - y.clone());
 
-        // Digest: enforce that the 4 tail columns equal simple linear digest of (x,y,ts)
+        // Digest: bind the 4 tail columns to public values only (computed off-circuit as Poseidon2 digest)
         let base_d = 3 + X_BLOCK + Y_BLOCK;
-        // If digest is present in PVs, bind them too (indices 4..8)
         if pvs.len() >= 8 {
-            for k in 0..4 {
-                builder.assert_eq(row.get(0, base_d + k).unwrap(), pvs[4 + k]);
-            }
+            for k in 0..4 { builder.assert_eq(row.get(0, base_d + k).unwrap(), pvs[4 + k]); }
         }
-        // Constraint the digest deterministically in-field (non-cryptographic)
-        let d0 = x.clone()
-            + (y.clone() * AB::F::from_u32(3))
-            + (ts.clone() * AB::F::from_u32(5))
-            + AB::F::from_u32(0x9E3779B9);
-        let d1 = y.clone() + ts.clone() + AB::F::from_u32(0x85EBCA6B); // rotation skipped in-field; still binding algebraically
-        let d2 = ts.clone() + x.clone() + AB::F::from_u32(0xC2B2AE35);
-        let d3 = d0.clone() + d1.clone() + d2.clone() + AB::F::from_u32(0x27D4EB2D);
-        builder.assert_eq(row.get(0, base_d + 0).unwrap(), d0);
-        builder.assert_eq(row.get(0, base_d + 1).unwrap(), d1);
-        builder.assert_eq(row.get(0, base_d + 2).unwrap(), d2);
-        builder.assert_eq(row.get(0, base_d + 3).unwrap(), d3);
     }
 }
 
@@ -209,8 +185,8 @@ pub fn build_trace_outside_leaf(
     for j in 0..30 { row[base_y + 2 + 30 + j] = BabyBear::from_bool(((diff_right_y >> j) & 1) == 1); }
     let sel_y = if y_plus_one <= min_y { 1u32 } else { 0u32 };
     row[base_y + 2 + 30 + 30] = BabyBear::from_bool(sel_y == 1);
-    // Digest
-    let d = digest_xyts(x, y, ts);
+    // Digest (Poseidon2 commitment)
+    let d = poseidon2_digest_xyts(x, y, ts);
     let base_d = 3 + X_BLOCK + Y_BLOCK;
     for k in 0..4 { row[base_d + k] = BabyBear::new(d[k]); }
     RowMajorMatrix::new_row(row)
@@ -242,7 +218,7 @@ pub fn prove_outside_leaf(
     let config = MyConfig::new(pcs, challenger);
 
     let trace = build_trace_outside_leaf(x, y, ts, rect);
-    let digest = digest_xyts(x, y, ts);
+    let digest = poseidon2_digest_xyts(x, y, ts);
     let pvs = flatten_pv_outside_leaf(rect, digest);
     p3_uni_stark::prove(&config, &OutsideLeafAir, trace, &pvs)
 }
