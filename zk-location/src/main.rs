@@ -1060,6 +1060,30 @@ where
 
 fn main() {
     {
+        println!("--- Outside-only leaves + placeholder aggregator demo ---");
+        // Shared private (x,y,ts) to bind leaves via digest C
+        let (x_priv, y_priv, ts_priv) = (100u32, 200u32, 123456u32);
+        let c = outside_leaf::digest_xyts(x_priv, y_priv, ts_priv);
+
+        // Two rectangles where the point is outside in BOTH x and y (as required by the leaf AIR)
+        let rect1 = (1000u32, 1200u32, 5000u32, 6000u32);
+        let rect2 = (3000u32, 4000u32, 8000u32, 9000u32);
+
+        // Prove and verify two outside-only leaves (same C)
+        let leaf1 = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, rect1);
+        let ok1 = outside_leaf::verify_outside_leaf(&leaf1, rect1, c);
+        let leaf2 = outside_leaf::prove_outside_leaf(x_priv, y_priv, ts_priv, rect2);
+        let ok2 = outside_leaf::verify_outside_leaf(&leaf2, rect2, c);
+        println!("Leaf verifications: {} and {}", ok1, ok2);
+
+        // Aggregate the two digests with a placeholder parent = left + right (lane-wise), carrying the same C
+        let d1 = outside_leaf::digest_xyts(x_priv, y_priv, ts_priv);
+        let d2 = d1; // same secret -> same digest
+        let agg = outside_agg::prove_outside_agg(d1, d2, c);
+        let ok_agg = outside_agg::verify_outside_agg(&agg, d1, d2, c);
+        println!("Aggregator verification: {}", ok_agg);
+    }
+    {
         println!("--- Combined Outside+Inside Aggregate demo ---");
         let (x_priv, y_priv, ts_priv) = (42u32, 7u32, 1000u32);
         // Global TS (shared)

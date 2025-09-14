@@ -15,13 +15,35 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
 /// Simple linear digest over (x,y,ts) to bind leaves together.
-/// NOTE: Placeholder for cryptographic hash. Replace with Poseidon2 gadget in recursive version.
+/// Arithmetic is performed modulo BabyBear prime to match in-AIR field math.
 #[inline]
-fn digest_xyts(x: u32, y: u32, ts: u32) -> [u32; 4] {
-    let d0 = x.wrapping_add(3u32.wrapping_mul(y)).wrapping_add(5u32.wrapping_mul(ts)).wrapping_add(0x9E3779B9);
-    let d1 = y.rotate_left(7).wrapping_add(ts.rotate_left(11)).wrapping_add(0x85EBCA6B);
-    let d2 = ts.rotate_left(3).wrapping_add(x.rotate_left(13)).wrapping_add(0xC2B2AE35);
-    let d3 = d0 ^ d1 ^ d2 ^ 0x27D4EB2D;
+pub fn digest_xyts(x: u32, y: u32, ts: u32) -> [u32; 4] {
+    const P: u128 = 0x7800_0001; // BabyBear prime
+    #[inline]
+    fn add_mod(a: u128, b: u128) -> u128 { let mut s = a + b; if s >= P { s -= P; } s }
+    #[inline]
+    fn mul_mod(a: u128, b: u128) -> u128 { let m = a * b; let r = m % P; r }
+
+    let x128 = x as u128;
+    let y128 = y as u128;
+    let ts128 = ts as u128;
+
+    let d0 = {
+        let t = add_mod(x128, add_mod(mul_mod(3, y128), add_mod(mul_mod(5, ts128), 0x9E37_79B9 as u128)));
+        t as u32
+    };
+    let d1 = {
+        let t = add_mod(y128, add_mod(ts128, 0x85EB_CA6B as u128));
+        t as u32
+    };
+    let d2 = {
+        let t = add_mod(ts128, add_mod(x128, 0xC2B2_AE35 as u128));
+        t as u32
+    };
+    let d3 = {
+        let t = add_mod(d0 as u128, add_mod(d1 as u128, add_mod(d2 as u128, 0x27D4_EB2D as u128)));
+        t as u32
+    };
     [d0, d1, d2, d3]
 }
 
