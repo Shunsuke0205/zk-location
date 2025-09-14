@@ -17,6 +17,10 @@ use p3_challenger::DuplexChallenger;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
+mod recursive; // scaffolding for recursive aggregation API
+mod outside_leaf; // single-rectangle outside leaf
+mod outside_agg;  // placeholder digest-only aggregator
+
 
 
 type Val = BabyBear;
@@ -765,7 +769,7 @@ fn build_trace_outside_box_shared_private(
         for j in 0..30 {
             row[base_x + 2 + 30 + j] = BabyBear::from_bool(((diff_right >> j) & 1) == 1);
         }
-        let sel = if x_plus_one <= min_x { 1u32 } else { 0u32 }; // choose left branch iff x < min_x
+        let sel = if x_plus_one <= min_x { 1u32 } else { 0u32 };
         row[base_x + 2 + 30 + 30] = BabyBear::from_bool(sel == 1);
 
         // Y block
@@ -1195,4 +1199,5 @@ fn main() {
             ok_combined, outside_boxes.len()
         );
     }
+    // (recursion scaffolding present; demo omitted to avoid feature gating changes)
 }
