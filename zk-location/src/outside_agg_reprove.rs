@@ -4,12 +4,8 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 
-use crate::{Challenger, Dft, MyCompress, MyConfig, MyHash, Perm, Pcs, Val, ValMmcs};
-use p3_challenger::DuplexChallenger;
-use p3_fri::create_test_fri_params_zk;
-use p3_merkle_tree::MerkleTreeMmcs;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use crate::{MyConfig, Val};
+use crate::config::make_config_default;
 
 /// Aggregator that re-proves two OutsideLeaf statements in-circuit for the same (x,y,ts),
 /// binds a shared commitment C, and enforces parent = left + right (lane-wise, mod p).
@@ -269,17 +265,7 @@ pub fn prove_outside_agg_reprove(
     right: (u32, u32, u32, u32),
     c: [u32; 4],
 ) -> p3_uni_stark::Proof<MyConfig> {
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger: Challenger = DuplexChallenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = make_config_default();
 
     // Child digests are Poseidon2(x,y,ts) off-circuit (same for both children since secret is shared)
     let left_digest = crate::outside_leaf::poseidon2_digest_xyts(x, y, ts);
@@ -296,21 +282,27 @@ pub fn verify_outside_agg_reprove(
     c: [u32; 4],
     x: u32, y: u32, ts: u32,
 ) -> bool {
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger: Challenger = DuplexChallenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = make_config_default();
 
     // Recompute child digests off-circuit consistently for PVs
     let left_digest = crate::outside_leaf::poseidon2_digest_xyts(x, y, ts);
     let right_digest = left_digest;
     let pvs = flatten_pv_outside_agg_reprove(left, right, c, left_digest, right_digest);
     p3_uni_stark::verify(&config, &OutsideAggReproveAir, proof, &pvs).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outside_leaf::poseidon2_digest_xyts;
+
+    #[test]
+    fn reprove_aggregator_smoke() {
+        let (x,y,ts) = (111u32, 222u32, 333u32);
+        let c = poseidon2_digest_xyts(x,y,ts);
+        let left = (10, 20, 30, 40);
+        let right = (50, 60, 70, 80);
+        let pr = prove_outside_agg_reprove(x,y,ts, left, right, c);
+        assert!(verify_outside_agg_reprove(&pr, left, right, c, x,y,ts));
+    }
 }

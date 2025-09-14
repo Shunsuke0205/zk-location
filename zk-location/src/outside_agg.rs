@@ -3,13 +3,9 @@ use p3_field::{Field, PrimeCharacteristicRing};
 use p3_baby_bear::BabyBear;
 use p3_matrix::dense::RowMajorMatrix;
 
-use crate::{Challenger, Dft, MyCompress, MyConfig, MyHash, Perm, Pcs, Val, ValMmcs};
-use p3_challenger::DuplexChallenger;
-use p3_fri::create_test_fri_params_zk;
-use p3_merkle_tree::MerkleTreeMmcs;
+use crate::{MyConfig, Val};
+use crate::config::make_config_default;
 use p3_matrix::Matrix;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
 
 /// Placeholder aggregator AIR: checks parent = left + right (lane-wise) and enforces C consistency.
 /// This is NOT cryptographic; it is to wire the API and tree builder until the recursive verifier is implemented.
@@ -79,17 +75,7 @@ pub fn flatten_pv_outside_agg(left: [u32;4], right: [u32;4], parent: [u32;4], c:
 
 #[allow(dead_code)]
 pub fn prove_outside_agg(left: [u32;4], right: [u32;4], c: [u32;4]) -> p3_uni_stark::Proof<MyConfig> {
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger: Challenger = DuplexChallenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = make_config_default();
 
     let trace = build_trace_outside_agg(left, right, c);
     const P: u128 = 0x7800_0001;
@@ -101,21 +87,45 @@ pub fn prove_outside_agg(left: [u32;4], right: [u32;4], c: [u32;4]) -> p3_uni_st
 
 #[allow(dead_code)]
 pub fn verify_outside_agg(proof: &p3_uni_stark::Proof<MyConfig>, left: [u32;4], right: [u32;4], c: [u32;4]) -> bool {
-    let mut rng = SmallRng::seed_from_u64(1);
-    let perm = Perm::new_from_rng_128(&mut rng);
-    let hash = MyHash::new(perm.clone());
-    let compress = MyCompress::new(perm.clone());
-    let val_mmcs = ValMmcs::new(hash, compress);
-    let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
-    let dft = Dft::default();
-    let fri_params = create_test_fri_params_zk(challenge_mmcs);
-    let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
-    let challenger: Challenger = DuplexChallenger::new(perm);
-    let config = MyConfig::new(pcs, challenger);
+    let config = make_config_default();
 
     const P: u128 = 0x7800_0001;
     #[inline] fn add_p(a: u32, b: u32) -> u32 { let mut s = (a as u128) + (b as u128); if s >= P { s -= P; } s as u32 }
     let parent = [add_p(left[0], right[0]), add_p(left[1], right[1]), add_p(left[2], right[2]), add_p(left[3], right[3])];
     let pvs = flatten_pv_outside_agg(left, right, parent, c);
     p3_uni_stark::verify(&config, &OutsideAggAir, proof, &pvs).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::outside_leaf;
+
+    #[test]
+    fn outside_aggregation_16_to_1_smoke() {
+        let (x, y, ts) = (2468u32, 1357u32, 424242u32);
+        let c = outside_leaf::poseidon2_digest_xyts(x, y, ts);
+        let rects: [(u32,u32,u32,u32); 16] = [
+            (10, 20, 30, 40),   (50, 60, 70, 80),
+            (90, 100, 110, 120),(130, 140, 150, 160),
+            (170, 180, 190, 200),(210, 220, 230, 240),
+            (250, 260, 270, 280),(290, 300, 310, 320),
+            (330, 340, 350, 360),(370, 380, 390, 400),
+            (410, 420, 430, 440),(450, 460, 470, 480),
+            (490, 500, 510, 520),(530, 540, 550, 560),
+            (570, 580, 590, 600),(610, 620, 630, 640),
+        ];
+        // Prove leaves and verify
+        for r in rects { let p = outside_leaf::prove_outside_leaf(x,y,ts,r); assert!(outside_leaf::verify_outside_leaf(&p, r, c)); }
+        // Aggregate 16->8->4->2->1 using digest-only aggregator
+        let d = outside_leaf::poseidon2_digest_xyts(x, y, ts);
+        let mut lvl8 = [[0u32;4]; 8];
+        for i in 0..8 { let pr = prove_outside_agg(d, d, c); assert!(verify_outside_agg(&pr, d, d, c)); lvl8[i] = combine_digests_mod_p(d,d); }
+        let mut lvl4 = [[0u32;4]; 4];
+        for i in 0..4 { let pr = prove_outside_agg(lvl8[2*i], lvl8[2*i+1], c); assert!(verify_outside_agg(&pr, lvl8[2*i], lvl8[2*i+1], c)); lvl4[i] = combine_digests_mod_p(lvl8[2*i], lvl8[2*i+1]); }
+        let mut lvl2 = [[0u32;4]; 2];
+        for i in 0..2 { let pr = prove_outside_agg(lvl4[2*i], lvl4[2*i+1], c); assert!(verify_outside_agg(&pr, lvl4[2*i], lvl4[2*i+1], c)); lvl2[i] = combine_digests_mod_p(lvl4[2*i], lvl4[2*i+1]); }
+        let pr = prove_outside_agg(lvl2[0], lvl2[1], c);
+        assert!(verify_outside_agg(&pr, lvl2[0], lvl2[1], c));
+    }
 }
