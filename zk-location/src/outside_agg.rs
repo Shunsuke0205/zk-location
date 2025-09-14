@@ -4,6 +4,7 @@ use p3_baby_bear::BabyBear;
 use p3_matrix::dense::RowMajorMatrix;
 
 use crate::{MyConfig, Val};
+// use crate::combine; // reserved for future upgrade to (a + 2*b)^7
 use crate::config::make_config_default;
 use p3_matrix::Matrix;
 

@@ -6,6 +6,7 @@ use p3_matrix::Matrix;
 
 use crate::{MyConfig, Val};
 use crate::config::make_config_with_blowup;
+// use crate::combine; // not used here to keep PoC semantics as left + 3*right
 
 /// Non-commutative lane-wise combine used for PoC Merkle hashing inside the AIR:
 /// parent = left + 3 * right  (mod p)

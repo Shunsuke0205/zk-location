@@ -24,6 +24,7 @@ mod outside_agg;  // placeholder digest-only aggregator
 mod outside_agg_reprove; // aggregator that re-proves two leaves in-circuit
 mod merkle_path; // PoC Merkle path verifier (non-commutative combine)
 mod config; // common config helpers (PCS/Challenger/Fri)
+mod combine; // shared (a + 2*b)^7 combine utilities
 
 
 
