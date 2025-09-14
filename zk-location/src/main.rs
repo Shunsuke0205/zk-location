@@ -1231,5 +1231,62 @@ fn main() {
             ok_combined, outside_boxes.len()
         );
     }
+    {
+        // Optional heavy demo: 2^12 identical OutsideBox claims to test AIR scalability.
+        // Enable by setting env RUN_OUTSIDE_4096=1 before running.
+        if std::env::var("RUN_OUTSIDE_4096").map(|v| v == "1").unwrap_or(false) {
+            println!("--- Large Outside demo: 4096 identical boxes (gated) ---");
+            // Reuse Tokyo-like coordinate system (micro-degree biased)
+            let tokyo_pt_lat = 35.681236_f64; // Tokyo Station
+            let tokyo_pt_lon = 139.767125_f64;
+            let y_priv = lat_deg_to_micro_biased(tokyo_pt_lat);
+            let x_priv = lon_deg_to_micro_biased(tokyo_pt_lon);
+            let ts_priv: u32 = 1_700_000_000;
+
+            // Frame and a single outside rectangle we will replicate 4096 times.
+            let frame_lat_max: f64 = 37.0;
+            let frame_lon_min: f64 = 138.0; let frame_lon_max: f64 = 141.0;
+
+            // Choose the "north band" rectangle: lat range entirely above the Tokyo inside box, full lon frame.
+            let eps: f64 = 0.01; // small margin
+            let north_lat_min: f64 = (35.95_f64 + eps).min(frame_lat_max);
+            let (fx_min, fx_max) = (lon_deg_to_micro_biased(frame_lon_min), lon_deg_to_micro_biased(frame_lon_max));
+            let (ny_min, ny_max) = (lat_deg_to_micro_biased(north_lat_min), lat_deg_to_micro_biased(frame_lat_max));
+            let rect_north: (u32, u32, u32, u32) = (fx_min, fx_max, ny_min, ny_max);
+
+            // Global TS range (same as earlier Tokyo demo)
+            let min_ts = 1_600_000_000; let max_ts = 1_800_000_000;
+            let global_ts = (min_ts, max_ts);
+
+            // Build 2^12 identical claims
+            let n: usize = 1 << 12; // 4096
+            let outside_boxes: Vec<(u32, u32, u32, u32)> = vec![rect_north; n];
+
+            // Quick report on trace width to anticipate memory
+            const CLAIM_SEL: usize = 1;
+            const X_BLOCK: usize = 2 + 30 + 30 + 1;
+            const Y_BLOCK: usize = 2 + 30 + 30 + 1;
+            const TS_BLOCK: usize = 2 + 30 + 30;
+            let width = 3 + TS_BLOCK + n * (CLAIM_SEL + X_BLOCK + Y_BLOCK);
+            println!("Trace width ~ {} columns (single row)", width);
+
+            let t0 = Instant::now();
+            let proof = prove_outside_box_shared_private_aggregate(
+                x_priv, y_priv, ts_priv, global_ts, &outside_boxes
+            );
+            let t_prove = t0.elapsed();
+            let t1 = Instant::now();
+            let ok = verify_outside_box_shared_private_aggregate(
+                &proof, global_ts, &outside_boxes
+            );
+            let t_verify = t1.elapsed();
+            println!(
+                "4096-outside verification: {} (prove: {:?}, verify: {:?})",
+                ok, t_prove, t_verify
+            );
+        } else {
+            println!("--- Skipping 4096-outside demo (set RUN_OUTSIDE_4096=1 to run) ---");
+        }
+    }
     // (recursion scaffolding present; demo omitted to avoid feature gating changes)
 }
