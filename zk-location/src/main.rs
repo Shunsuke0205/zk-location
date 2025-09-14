@@ -686,11 +686,12 @@ pub struct OutsideInsideAggregateAir { pub n_outside: usize }
 impl<F: Field> BaseAir<F> for OutsideInsideAggregateAir {
     fn width(&self) -> usize {
         const CLAIM_SEL: usize = 1;
-        const X_BLOCK: usize = 2 + 30 + 30 + 1;
-        const Y_BLOCK: usize = 2 + 30 + 30 + 1;
-        const TS_BLOCK: usize = 2 + 30 + 30;
-        const BLOCK_DIM: usize = 2 + 30 + 30; // per dimension for inside claim
-        3 + self.n_outside * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK) + 3 * BLOCK_DIM
+        const OUTSIDE_X_BLOCK: usize = 2 + 30 + 30 + 1;
+        const OUTSIDE_Y_BLOCK: usize = 2 + 30 + 30 + 1;
+        const TS_BLOCK: usize = 2 + 30 + 30; // global
+        const INSIDE_BLOCK: usize = 2 + 30 + 30; // per dimension (x/y) for inside claim
+
+        3 + TS_BLOCK + self.n_outside * (CLAIM_SEL + OUTSIDE_X_BLOCK + OUTSIDE_Y_BLOCK) + 2 * INSIDE_BLOCK
     }
 }
 
@@ -712,9 +713,38 @@ where
         const TS_BLOCK: usize = 2 + 30 + 30;
         const BLOCK_DIM: usize = 2 + 30 + 30;
 
+        // --- Global TS block (shared across outside and inside claims) ---
+        let base_ts_global = 3;
+        let min_ts_g = row.get(0, base_ts_global + 0).unwrap().into();
+        let max_ts_g = row.get(0, base_ts_global + 1).unwrap().into();
+        if pvs.len() >= 2 {
+            builder.assert_eq(row.get(0, base_ts_global + 0).unwrap(), pvs[0]);
+            builder.assert_eq(row.get(0, base_ts_global + 1).unwrap(), pvs[1]);
+        }
+        // ts - min_ts_g >= 0
+        let mut acc_ts1 = ts_priv.clone() - ts_priv.clone();
+        let mut p2t1 = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_ts_global + 2 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc_ts1 = acc_ts1 + bit.clone().into() * p2t1.clone();
+            if j < 29 { p2t1 = p2t1.clone() + p2t1; }
+        }
+        builder.assert_eq(acc_ts1, ts_priv.clone() - min_ts_g.clone());
+        // max_ts_g - ts >= 0
+        let mut acc_ts2 = ts_priv.clone() - ts_priv.clone();
+        let mut p2t2 = AB::F::ONE;
+        for j in 0..30 {
+            let bit = row.get(0, base_ts_global + 32 + j).unwrap();
+            builder.assert_bool(bit.clone());
+            acc_ts2 = acc_ts2 + bit.clone().into() * p2t2.clone();
+            if j < 29 { p2t2 = p2t2.clone() + p2t2; }
+        }
+        builder.assert_eq(acc_ts2, max_ts_g.clone() - ts_priv.clone());
+
         // Outside claims
         for i in 0..self.n_outside {
-            let base = 3 + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+            let base = 3 + TS_BLOCK + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK);
             let t = row.get(0, base + 0).unwrap();
             builder.assert_bool(t.clone());
 
@@ -724,9 +754,9 @@ where
             let max_x = row.get(0, base_x + 1).unwrap().into();
             let sx = row.get(0, base_x + 2 + 30 + 30).unwrap();
             builder.assert_bool(sx.clone());
-            if pvs.len() >= (i + 1) * 6 {
-                builder.assert_eq(row.get(0, base_x + 0).unwrap(), pvs[6 * i + 0]);
-                builder.assert_eq(row.get(0, base_x + 1).unwrap(), pvs[6 * i + 1]);
+            if pvs.len() >= 2 + (i + 1) * 4 {
+                builder.assert_eq(row.get(0, base_x + 0).unwrap(), pvs[2 + 4 * i + 0]);
+                builder.assert_eq(row.get(0, base_x + 1).unwrap(), pvs[2 + 4 * i + 1]);
             }
             let zero = x_priv.clone() - x_priv.clone();
             let mut acc_l = zero.clone();
@@ -758,9 +788,9 @@ where
             let max_y = row.get(0, base_y + 1).unwrap().into();
             let sy = row.get(0, base_y + 2 + 30 + 30).unwrap();
             builder.assert_bool(sy.clone());
-            if pvs.len() >= (i + 1) * 6 {
-                builder.assert_eq(row.get(0, base_y + 0).unwrap(), pvs[6 * i + 2]);
-                builder.assert_eq(row.get(0, base_y + 1).unwrap(), pvs[6 * i + 3]);
+            if pvs.len() >= 2 + (i + 1) * 4 {
+                builder.assert_eq(row.get(0, base_y + 0).unwrap(), pvs[2 + 4 * i + 2]);
+                builder.assert_eq(row.get(0, base_y + 1).unwrap(), pvs[2 + 4 * i + 3]);
             }
             let mut acc_ly = y_priv.clone() - y_priv.clone();
             let mut p2y1 = AB::F::ONE;
@@ -784,45 +814,15 @@ where
             let one_minus_sy = one.clone() - sy.clone().into();
             let diff_ry = y_priv.clone() - (max_y.clone() + AB::F::ONE);
             builder.assert_eq(one_minus_t.clone() * one_minus_sy.clone() * (acc_ry - diff_ry), y_priv.clone() - y_priv.clone());
-
-            // TS block
-            let base_ts = base + CLAIM_SEL + X_BLOCK + Y_BLOCK;
-            let min_ts = row.get(0, base_ts + 0).unwrap().into();
-            let max_ts = row.get(0, base_ts + 1).unwrap().into();
-            if pvs.len() >= (i + 1) * 6 {
-                builder.assert_eq(row.get(0, base_ts + 0).unwrap(), pvs[6 * i + 4]);
-                builder.assert_eq(row.get(0, base_ts + 1).unwrap(), pvs[6 * i + 5]);
-            }
-            let mut acc_ts1 = ts_priv.clone() - ts_priv.clone();
-            let mut p2t1 = AB::F::ONE;
-            for j in 0..30 {
-                let bit = row.get(0, base_ts + 2 + j).unwrap();
-                builder.assert_bool(bit.clone());
-                acc_ts1 = acc_ts1 + bit.clone().into() * p2t1.clone();
-                if j < 29 { p2t1 = p2t1.clone() + p2t1; }
-            }
-            builder.assert_eq(acc_ts1, ts_priv.clone() - min_ts.clone());
-            let mut acc_ts2 = ts_priv.clone() - ts_priv.clone();
-            let mut p2t2 = AB::F::ONE;
-            for j in 0..30 {
-                let bit = row.get(0, base_ts + 32 + j).unwrap();
-                builder.assert_bool(bit.clone());
-                acc_ts2 = acc_ts2 + bit.clone().into() * p2t2.clone();
-                if j < 29 { p2t2 = p2t2.clone() + p2t2; }
-            }
-            builder.assert_eq(acc_ts2, max_ts.clone() - ts_priv.clone());
         }
 
-        // Inside claim (one)
-        let base_inside = 3 + self.n_outside * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
-        // Bind PVs for inside claim if provided
-        if pvs.len() >= self.n_outside * 6 + 6 {
-            builder.assert_eq(row.get(0, base_inside + 0).unwrap(), pvs[self.n_outside * 6 + 0]);
-            builder.assert_eq(row.get(0, base_inside + 1).unwrap(), pvs[self.n_outside * 6 + 1]);
-            builder.assert_eq(row.get(0, base_inside + (BLOCK_DIM) + 0).unwrap(), pvs[self.n_outside * 6 + 2]);
-            builder.assert_eq(row.get(0, base_inside + (BLOCK_DIM) + 1).unwrap(), pvs[self.n_outside * 6 + 3]);
-            builder.assert_eq(row.get(0, base_inside + 2 * (BLOCK_DIM) + 0).unwrap(), pvs[self.n_outside * 6 + 4]);
-            builder.assert_eq(row.get(0, base_inside + 2 * (BLOCK_DIM) + 1).unwrap(), pvs[self.n_outside * 6 + 5]);
+        // Inside claim (one), only X and Y blocks (TS enforced globally)
+        let base_inside = 3 + TS_BLOCK + self.n_outside * (CLAIM_SEL + X_BLOCK + Y_BLOCK);
+        if pvs.len() >= 2 + self.n_outside * 4 + 4 {
+            builder.assert_eq(row.get(0, base_inside + 0).unwrap(), pvs[2 + self.n_outside * 4 + 0]);
+            builder.assert_eq(row.get(0, base_inside + 1).unwrap(), pvs[2 + self.n_outside * 4 + 1]);
+            builder.assert_eq(row.get(0, base_inside + BLOCK_DIM + 0).unwrap(), pvs[2 + self.n_outside * 4 + 2]);
+            builder.assert_eq(row.get(0, base_inside + BLOCK_DIM + 1).unwrap(), pvs[2 + self.n_outside * 4 + 3]);
         }
 
         // X inside
@@ -869,29 +869,6 @@ where
             if j < 29 { p2y2b = p2y2b.clone() + p2y2b; }
         }
         builder.assert_eq(acc2_y, max_y_in.clone() - y_priv.clone());
-
-        // TS inside
-        let base_in_ts = base_inside + 2 * BLOCK_DIM;
-        let min_ts_in = row.get(0, base_in_ts + 0).unwrap().into();
-        let max_ts_in = row.get(0, base_in_ts + 1).unwrap().into();
-        let mut acc1_ts = ts_priv.clone() - ts_priv.clone();
-        let mut p2t1b = AB::F::ONE;
-        for j in 0..30 {
-            let bit = row.get(0, base_in_ts + 2 + j).unwrap();
-            builder.assert_bool(bit.clone());
-            acc1_ts = acc1_ts + bit.clone().into() * p2t1b.clone();
-            if j < 29 { p2t1b = p2t1b.clone() + p2t1b; }
-        }
-        builder.assert_eq(acc1_ts, ts_priv.clone() - min_ts_in.clone());
-        let mut acc2_ts = ts_priv.clone() - ts_priv.clone();
-        let mut p2t2b = AB::F::ONE;
-        for j in 0..30 {
-            let bit = row.get(0, base_in_ts + 32 + j).unwrap();
-            builder.assert_bool(bit.clone());
-            acc2_ts = acc2_ts + bit.clone().into() * p2t2b.clone();
-            if j < 29 { p2t2b = p2t2b.clone() + p2t2b; }
-        }
-        builder.assert_eq(acc2_ts, max_ts_in.clone() - ts_priv.clone());
     }
 }
 
