@@ -46,6 +46,18 @@ pub fn compute_merkle_root_poc(
     curr
 }
 
+/// Heuristic parameter selection for the PoC to satisfy LDE sizing while keeping it fast.
+/// Condition to avoid panic: blowup_bits >= log_quotient_degree (empirical upper bound grows with depth).
+/// Returns: (trace_height, fri_log_blowup).
+fn select_poc_params(depth: usize) -> (usize, usize) {
+    match depth {
+        0..=2 => (8, 2),    // shallow paths: small blowup
+        3..=4 => (8, 4),    // our demo depth=4 uses blowup=4
+        5..=6 => (16, 5),   // deeper: bump both moderately
+        _ => (32, 6),       // conservative ceiling for larger depths
+    }
+}
+
 /// AIR that verifies a Merkle path of fixed depth using the PoC combine.
 /// Layout (single row):
 ///  - 0..4: leaf lanes
@@ -146,7 +158,7 @@ pub fn build_trace_merkle_path(
         for k in 0..4 { row[base + k] = BabyBear::new(siblings[i][k]); }
         row[base + 4] = BabyBear::from_bool((dirs[i] & 1) == 1);
     }
-    let height = 8usize;
+    let (height, _blowup_bits) = select_poc_params(depth);
     let mut values = Vec::with_capacity(width * height);
     for _ in 0..height { values.extend_from_slice(&row); }
     RowMajorMatrix::new(values, width)
@@ -162,6 +174,8 @@ pub fn prove_merkle_path(
     dirs: &[u32],
     root: [u32; 4],
 ) -> p3_uni_stark::Proof<MyConfig> {
+    let depth = siblings.len();
+    let (_height, blowup_bits) = select_poc_params(depth);
     let mut rng = SmallRng::seed_from_u64(1);
     let perm = Perm::new_from_rng_128(&mut rng);
     let hash = MyHash::new(perm.clone());
@@ -169,9 +183,8 @@ pub fn prove_merkle_path(
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
     let dft = Dft::default();
-    // Use a larger blowup to accommodate the higher quotient degree from layered products.
-    // This avoids lde.height() < domain.size() when depth grows.
-    let fri_params = FriParameters { log_blowup: 6, log_final_poly_len: 0, num_queries: 2, proof_of_work_bits: 1, mmcs: challenge_mmcs };
+    // Heuristic: ensure blowup_bits >= log_quotient_degree (empirical upper bound grows with depth).
+    let fri_params = FriParameters { log_blowup: blowup_bits, log_final_poly_len: 0, num_queries: 2, proof_of_work_bits: 1, mmcs: challenge_mmcs };
     let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
     let challenger: Challenger = DuplexChallenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
@@ -187,6 +200,7 @@ pub fn verify_merkle_path(
     depth: usize,
     root: [u32; 4],
 ) -> bool {
+    let (_height, blowup_bits) = select_poc_params(depth);
     let mut rng = SmallRng::seed_from_u64(1);
     let perm = Perm::new_from_rng_128(&mut rng);
     let hash = MyHash::new(perm.clone());
@@ -194,8 +208,8 @@ pub fn verify_merkle_path(
     let val_mmcs = ValMmcs::new(hash, compress);
     let challenge_mmcs = p3_commit::ExtensionMmcs::<_, _, MerkleTreeMmcs<_, _, _, _, 8>>::new(val_mmcs.clone());
     let dft = Dft::default();
-    // Must match prover's params
-    let fri_params = FriParameters { log_blowup: 6, log_final_poly_len: 0, num_queries: 2, proof_of_work_bits: 1, mmcs: challenge_mmcs };
+    // Must match prover's blowup bits
+    let fri_params = FriParameters { log_blowup: blowup_bits, log_final_poly_len: 0, num_queries: 2, proof_of_work_bits: 1, mmcs: challenge_mmcs };
     let pcs = Pcs::new(dft, val_mmcs, fri_params, 4, SmallRng::seed_from_u64(1));
     let challenger: Challenger = DuplexChallenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
