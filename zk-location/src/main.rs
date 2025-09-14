@@ -16,6 +16,7 @@ use p3_fri::{HidingFriPcs, create_test_fri_params_zk};
 use p3_challenger::DuplexChallenger;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use std::time::Instant;
 
 mod recursive; // scaffolding for recursive aggregation API
 mod outside_leaf; // single-rectangle outside leaf
@@ -1136,9 +1137,17 @@ fn main() {
         ];
         let dirs: [u32;4] = [0, 1, 0, 1]; // mix of left/right order
         let root = merkle_path::compute_merkle_root_poc(leaf, &siblings, &dirs);
+        let t0 = Instant::now();
         let proof = merkle_path::prove_merkle_path(leaf, &siblings, &dirs, root);
+        let t_prove = t0.elapsed();
+        let t1 = Instant::now();
         let ok = merkle_path::verify_merkle_path(&proof, siblings.len(), root);
-        println!("PoC Merkle path verification: {}", ok);
+        let t_verify = t1.elapsed();
+        println!(
+            "PoC Merkle path verification: {} (prove: {:?}, verify: {:?})",
+            ok, t_prove, t_verify
+        );
+        assert!(ok, "Merkle PoC verification failed");
     }
     {
         println!("--- Combined Outside+Inside Aggregate demo ---");
