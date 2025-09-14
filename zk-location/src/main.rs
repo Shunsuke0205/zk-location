@@ -1004,6 +1004,7 @@ where
 
 
 fn main() {
+    /* 
     {
         println!("--- Log-depth aggregation demo: 16 leaves -> 8 -> 4 -> 2 -> 1 ---");
         // Shared secret and commitment C
@@ -1065,6 +1066,7 @@ fn main() {
         let _root = outside_agg::combine_digests_mod_p(left, right);
         println!("Level-4 (2->1) root: {}", ok_root);
     }
+    */
     {
         println!("--- PoC Merkle path verification demo (depth=4, combine: left+3*right mod p) ---");
         // Use the leaf digest of our secret as a leaf
@@ -1234,7 +1236,7 @@ fn main() {
     {
         // Optional heavy demo: 2^12 identical OutsideBox claims to test AIR scalability.
         // Enable by setting env RUN_OUTSIDE_4096=1 before running.
-        if std::env::var("RUN_OUTSIDE_4096").map(|v| v == "1").unwrap_or(false) {
+        if std::env::var("RUN_OUTSIDE").ok().is_some() {
             println!("--- Large Outside demo: 4096 identical boxes (gated) ---");
             // Reuse Tokyo-like coordinate system (micro-degree biased)
             let tokyo_pt_lat = 35.681236_f64; // Tokyo Station
@@ -1258,8 +1260,13 @@ fn main() {
             let min_ts = 1_600_000_000; let max_ts = 1_800_000_000;
             let global_ts = (min_ts, max_ts);
 
+            let shift = std::env::var("RUN_OUTSIDE")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(0);
+            println!("Building 2^{} = {} identical outside boxes", shift, 1<<shift);
             // Build 2^12 identical claims
-            let n: usize = 1 << 12; // 4096
+            let n: usize = 1 << shift;
             let outside_boxes: Vec<(u32, u32, u32, u32)> = vec![rect_north; n];
 
             // Quick report on trace width to anticipate memory
@@ -1281,11 +1288,11 @@ fn main() {
             );
             let t_verify = t1.elapsed();
             println!(
-                "4096-outside verification: {} (prove: {:?}, verify: {:?})",
-                ok, t_prove, t_verify
+                "{}-outside verification: {} (prove: {:?}, verify: {:?})",
+                outside_boxes.len(), ok, t_prove, t_verify
             );
         } else {
-            println!("--- Skipping 4096-outside demo (set RUN_OUTSIDE_4096=1 to run) ---");
+            println!("--- Skipping large-outside demo (set RUN_OUTSIDE=1 to run) ---");
         }
     }
     // (recursion scaffolding present; demo omitted to avoid feature gating changes)
