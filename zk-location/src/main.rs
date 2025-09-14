@@ -1,3 +1,5 @@
+use std::fs::File;
+
 use p3_field::Field;
 use p3_baby_bear::BabyBear;
 use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
@@ -1353,6 +1355,17 @@ where
 
 
 fn main() {
+    {
+        let a = BabyBear::new(1);
+        let b = BabyBear::new(2);
+        let c = BabyBear::new(0);
+        println!("Test BabyBear field: 0 - 1 = {}", c - a);
+        println!("Test BabyBear field: 1 + 2 = {}", a + b);
+        println!("Test BabyBear field: 0 + 2 = {}", c + b);
+        println!("Test BabyBear field: 0 * 2 = {}", c * b);
+        println!("Test BabyBear field: 1 - 2 = {}", a - b);
+        println!("Test BabyBear field: 0 - 2 = {}", c - b);
+    }
     {
         println!("--- InsideBoxAir: 3D box (x, y, ts) range proof demo ---");
         let x_private = 15;
