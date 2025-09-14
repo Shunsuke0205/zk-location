@@ -472,21 +472,26 @@ fn verify_inside_box_shared_private_aggregate(
 
 
 
-/// OutsideBoxAggregateAir: shared private (x, ts) and multiple public claims (min_x,max_x,min_ts,max_ts).
-/// Proves for each claim i that: (x < min_x_i OR x > max_x_i) AND (min_ts_i <= ts <= max_ts_i).
+/// OutsideBoxAggregateAir: shared private (x, y, ts) and multiple public claims (min_x,max_x,min_y,max_y,min_ts,max_ts).
+/// Proves for each claim i that: (x < min_x_i OR x > max_x_i OR y < min_y_i OR y > max_y_i) AND (min_ts_i <= ts <= max_ts_i).
+/// Implemented as: a per-claim selector t chooses which dimension (X or Y) must be outside; if both are outside either is valid.
 /// Layout (single-row trace):
-/// - cols 0..1: [x_priv, ts_priv]
-/// - per claim i (order: X block then TS block):
-///   X block: [min_x, max_x, bits_left[30] for (min_x - (x+1)), bits_right[30] for (x - (max_x+1)), selector_s]
+/// - cols 0..2: [x_priv, y_priv, ts_priv]
+/// - per claim i (order: t, X block, Y block, then TS block):
+///   t: 1 bit selecting which dimension to enforce as outside (1 -> X, 0 -> Y)
+///   X block: [min_x, max_x, bits_left[30] for (min_x - (x+1)), bits_right[30] for (x - (max_x+1)), selector_sx]
+///   Y block: [min_y, max_y, bits_left[30] for (min_y - (y+1)), bits_right[30] for (y - (max_y+1)), selector_sy]
 ///   TS block: [min_ts, max_ts, bits_ge_min[30] for (ts - min_ts), bits_le_max[30] for (max_ts - ts)]
-/// Public values per claim: [min_x, max_x, min_ts, max_ts]
+/// Public values per claim: [min_x, max_x, min_y, max_y, min_ts, max_ts]
 pub struct OutsideBoxAggregateAir { pub n_claims: usize }
 
 impl<F: Field> BaseAir<F> for OutsideBoxAggregateAir {
     fn width(&self) -> usize {
-        const X_BLOCK: usize = 2 + 30 + 30 + 1; // min,max,bitsL,bitsR,selector
-        const TS_BLOCK: usize = 2 + 30 + 30; // min,max,bits1,bits2
-        2 + self.n_claims * (X_BLOCK + TS_BLOCK)
+    const CLAIM_SEL: usize = 1; // per-claim OR selector (X vs Y)
+    const X_BLOCK: usize = 2 + 30 + 30 + 1; // min,max,bitsL,bitsR,selector
+    const Y_BLOCK: usize = 2 + 30 + 30 + 1; // min,max,bitsL,bitsR,selector
+    const TS_BLOCK: usize = 2 + 30 + 30; // min,max,bits1,bits2
+    3 + self.n_claims * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK)
     }
 }
 
@@ -499,24 +504,31 @@ where
         let pvs: Vec<_> = builder.public_values().iter().cloned().collect();
 
         let x_priv = row.get(0, 0).unwrap().into();
-        let ts_priv = row.get(0, 1).unwrap().into();
+        let y_priv = row.get(0, 1).unwrap().into();
+        let ts_priv = row.get(0, 2).unwrap().into();
 
+        const CLAIM_SEL: usize = 1;
         const X_BLOCK: usize = 2 + 30 + 30 + 1;
+        const Y_BLOCK: usize = 2 + 30 + 30 + 1;
         const TS_BLOCK: usize = 2 + 30 + 30;
 
         for i in 0..self.n_claims {
-            let base = 2 + i * (X_BLOCK + TS_BLOCK);
+            let base = 3 + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+            // Claim-level OR selector: t=1 -> enforce X-outside, t=0 -> enforce Y-outside
+            let t = row.get(0, base + 0).unwrap();
+            builder.assert_bool(t.clone());
 
             // X block
-            let min_x = row.get(0, base + 0).unwrap().into();
-            let max_x = row.get(0, base + 1).unwrap().into();
-            let s = row.get(0, base + 2 + 30 + 30).unwrap(); // selector bit at end of X block
+            let base_x = base + CLAIM_SEL;
+            let min_x = row.get(0, base_x + 0).unwrap().into();
+            let max_x = row.get(0, base_x + 1).unwrap().into();
+            let s = row.get(0, base_x + 2 + 30 + 30).unwrap(); // selector bit at end of X block
             builder.assert_bool(s.clone());
 
             // Bind PVs if present
-            if pvs.len() >= (i + 1) * 4 {
-                builder.assert_eq(row.get(0, base + 0).unwrap(), pvs[4 * i + 0]);
-                builder.assert_eq(row.get(0, base + 1).unwrap(), pvs[4 * i + 1]);
+            if pvs.len() >= (i + 1) * 6 {
+                builder.assert_eq(row.get(0, base_x + 0).unwrap(), pvs[6 * i + 0]);
+                builder.assert_eq(row.get(0, base_x + 1).unwrap(), pvs[6 * i + 1]);
             }
 
             // Prepare 1 as Expr
@@ -527,20 +539,20 @@ where
             let mut acc_left = zero_expr.clone();
             let mut pow2 = AB::F::ONE;
             for j in 0..30 {
-                let bit = row.get(0, base + 2 + j).unwrap();
+                let bit = row.get(0, base_x + 2 + j).unwrap();
                 builder.assert_bool(bit.clone());
                 acc_left = acc_left + bit.clone().into() * pow2.clone();
                 if j < 29 { pow2 = pow2.clone() + pow2; }
             }
-            // s * (min_x - (x+1)) == s * acc_left
+            // t * s * (min_x - (x+1)) == t * s * acc_left
             let diff_left = min_x.clone() - (x_priv.clone() + one_expr.clone());
-            builder.assert_eq(s.clone().into() * (acc_left - diff_left), x_priv.clone() - x_priv.clone());
+            builder.assert_eq(t.clone().into() * s.clone().into() * (acc_left - diff_left), x_priv.clone() - x_priv.clone());
 
             // Right branch: acc_right = sum bits_right * 2^j for x - (max_x+1)
             let mut acc_right = zero_expr.clone();
             let mut pow2r = AB::F::ONE;
             for j in 0..30 {
-                let bit = row.get(0, base + 2 + 30 + j).unwrap();
+                let bit = row.get(0, base_x + 2 + 30 + j).unwrap();
                 builder.assert_bool(bit.clone());
                 acc_right = acc_right + bit.clone().into() * pow2r.clone();
                 if j < 29 { pow2r = pow2r.clone() + pow2r; }
@@ -548,15 +560,56 @@ where
             let one_expr_r = zero_expr.clone() + AB::F::ONE;
             let one_minus_s = one_expr_r.clone() - s.clone().into();
             let diff_right = x_priv.clone() - (max_x.clone() + one_expr_r.clone());
-            builder.assert_eq(one_minus_s.clone() * (acc_right - diff_right), x_priv.clone() - x_priv.clone());
+            // t * (1-s) * (x - (max_x+1)) == t * (1-s) * acc_right
+            builder.assert_eq(t.clone().into() * one_minus_s.clone() * (acc_right - diff_right), x_priv.clone() - x_priv.clone());
+
+            // Y block
+            let base_y = base + CLAIM_SEL + X_BLOCK;
+            let min_y = row.get(0, base_y + 0).unwrap().into();
+            let max_y = row.get(0, base_y + 1).unwrap().into();
+            let sy = row.get(0, base_y + 2 + 30 + 30).unwrap();
+            builder.assert_bool(sy.clone());
+            if pvs.len() >= (i + 1) * 6 {
+                builder.assert_eq(row.get(0, base_y + 0).unwrap(), pvs[6 * i + 2]);
+                builder.assert_eq(row.get(0, base_y + 1).unwrap(), pvs[6 * i + 3]);
+            }
+            // Left branch for y: min_y - (y+1)
+            let mut acc_left_y = y_priv.clone() - y_priv.clone();
+            let mut pow2y1 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_y + 2 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_left_y = acc_left_y + bit.clone().into() * pow2y1.clone();
+                if j < 29 { pow2y1 = pow2y1.clone() + pow2y1; }
+            }
+            let diff_left_y = min_y.clone() - (y_priv.clone() + AB::F::ONE);
+            // (1 - t) * sy * ...
+            let zero_expr_y = y_priv.clone() - y_priv.clone();
+            let one_expr_y = zero_expr_y.clone() + AB::F::ONE;
+            let one_minus_t_y = one_expr_y.clone() - t.clone().into();
+            builder.assert_eq(one_minus_t_y.clone() * sy.clone().into() * (acc_left_y - diff_left_y), y_priv.clone() - y_priv.clone());
+
+            // Right branch for y: y - (max_y+1)
+            let mut acc_right_y = y_priv.clone() - y_priv.clone();
+            let mut pow2y2 = AB::F::ONE;
+            for j in 0..30 {
+                let bit = row.get(0, base_y + 2 + 30 + j).unwrap();
+                builder.assert_bool(bit.clone());
+                acc_right_y = acc_right_y + bit.clone().into() * pow2y2.clone();
+                if j < 29 { pow2y2 = pow2y2.clone() + pow2y2; }
+            }
+            let one_minus_sy = one_expr_y.clone() - sy.clone().into();
+            let diff_right_y = y_priv.clone() - (max_y.clone() + AB::F::ONE);
+            // (1 - t) * (1 - sy) * ...
+            builder.assert_eq(one_minus_t_y.clone() * one_minus_sy.clone() * (acc_right_y - diff_right_y), y_priv.clone() - y_priv.clone());
 
             // TS block
-            let base_ts = base + X_BLOCK;
+            let base_ts = base + CLAIM_SEL + X_BLOCK + Y_BLOCK;
             let min_ts = row.get(0, base_ts + 0).unwrap().into();
             let max_ts = row.get(0, base_ts + 1).unwrap().into();
-            if pvs.len() >= (i + 1) * 4 {
-                builder.assert_eq(row.get(0, base_ts + 0).unwrap(), pvs[4 * i + 2]);
-                builder.assert_eq(row.get(0, base_ts + 1).unwrap(), pvs[4 * i + 3]);
+            if pvs.len() >= (i + 1) * 6 {
+                builder.assert_eq(row.get(0, base_ts + 0).unwrap(), pvs[6 * i + 4]);
+                builder.assert_eq(row.get(0, base_ts + 1).unwrap(), pvs[6 * i + 5]);
             }
 
             // ts - min_ts >= 0
@@ -587,33 +640,66 @@ where
 /// Build a single-row trace for OutsideBoxAggregateAir.
 fn build_trace_outside_box_shared_private(
     x_private: u32,
+    y_private: u32,
     ts_private: u32,
-    claims: &[(u32, u32, u32, u32)], // (min_x, max_x, min_ts, max_ts)
+    claims: &[(u32, u32, u32, u32, u32, u32)], // (min_x, max_x, min_y, max_y, min_ts, max_ts)
 ) -> RowMajorMatrix<BabyBear> {
+    const CLAIM_SEL: usize = 1;
     const X_BLOCK: usize = 2 + 30 + 30 + 1;
+    const Y_BLOCK: usize = 2 + 30 + 30 + 1;
     const TS_BLOCK: usize = 2 + 30 + 30;
     let n = claims.len();
-    let width = 2 + n * (X_BLOCK + TS_BLOCK);
+    let width = 3 + n * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
     let mut row = vec![BabyBear::ZERO; width];
     row[0] = BabyBear::new(x_private);
-    row[1] = BabyBear::new(ts_private);
+    row[1] = BabyBear::new(y_private);
+    row[2] = BabyBear::new(ts_private);
 
-    for (i, &(min_x, max_x, min_ts, max_ts)) in claims.iter().enumerate() {
-        let base = 2 + i * (X_BLOCK + TS_BLOCK);
+    for (i, &(min_x, max_x, min_y, max_y, min_ts, max_ts)) in claims.iter().enumerate() {
+        let base = 3 + i * (CLAIM_SEL + X_BLOCK + Y_BLOCK + TS_BLOCK);
+
+        // Choose which dimension to use to satisfy outside: prefer X if outside; otherwise Y.
+        let x_outside = x_private < min_x || x_private > max_x;
+    let t_choose_x = if x_outside { 1u32 } else { 0u32 }; // if both outside, X chosen
+        // If neither is outside, witness still fills bits for both, but proof will fail due to gating; we set t by preferring X.
+        row[base + 0] = BabyBear::from_bool(t_choose_x == 1);
+
         // X block
-        row[base + 0] = BabyBear::new(min_x);
-        row[base + 1] = BabyBear::new(max_x);
+        let base_x = base + CLAIM_SEL;
+        row[base_x + 0] = BabyBear::new(min_x);
+        row[base_x + 1] = BabyBear::new(max_x);
         let x_plus_one = x_private.saturating_add(1);
         let diff_left = min_x.saturating_sub(x_plus_one);
-        for j in 0..30 { row[base + 2 + j] = BabyBear::from_bool(((diff_left >> j) & 1) == 1); }
+        for j in 0..30 {
+            row[base_x + 2 + j] = BabyBear::from_bool(((diff_left >> j) & 1) == 1);
+        }
         let max_x_plus_one = max_x.saturating_add(1);
         let diff_right = x_private.saturating_sub(max_x_plus_one);
-        for j in 0..30 { row[base + 2 + 30 + j] = BabyBear::from_bool(((diff_right >> j) & 1) == 1); }
+        for j in 0..30 {
+            row[base_x + 2 + 30 + j] = BabyBear::from_bool(((diff_right >> j) & 1) == 1);
+        }
         let sel = if x_plus_one <= min_x { 1u32 } else { 0u32 }; // choose left branch iff x < min_x
-        row[base + 2 + 30 + 30] = BabyBear::from_bool(sel == 1);
+        row[base_x + 2 + 30 + 30] = BabyBear::from_bool(sel == 1);
+
+        // Y block
+        let base_y = base + CLAIM_SEL + X_BLOCK;
+        row[base_y + 0] = BabyBear::new(min_y);
+        row[base_y + 1] = BabyBear::new(max_y);
+        let y_plus_one = y_private.saturating_add(1);
+        let diff_left_y = min_y.saturating_sub(y_plus_one);
+        for j in 0..30 {
+            row[base_y + 2 + j] = BabyBear::from_bool(((diff_left_y >> j) & 1) == 1);
+        }
+        let max_y_plus_one = max_y.saturating_add(1);
+        let diff_right_y = y_private.saturating_sub(max_y_plus_one);
+        for j in 0..30 {
+            row[base_y + 2 + 30 + j] = BabyBear::from_bool(((diff_right_y >> j) & 1) == 1);
+        }
+        let sel_y = if y_plus_one <= min_y { 1u32 } else { 0u32 };
+        row[base_y + 2 + 30 + 30] = BabyBear::from_bool(sel_y == 1);
 
         // TS block
-        let base_ts = base + X_BLOCK;
+        let base_ts = base + CLAIM_SEL + X_BLOCK + Y_BLOCK;
         row[base_ts + 0] = BabyBear::new(min_ts);
         row[base_ts + 1] = BabyBear::new(max_ts);
         let diff_ts1 = ts_private.saturating_sub(min_ts);
@@ -625,11 +711,13 @@ fn build_trace_outside_box_shared_private(
     RowMajorMatrix::new_row(row)
 }
 
-fn flatten_public_bounds_outside(claims: &[(u32, u32, u32, u32)]) -> Vec<Val> {
-    let mut out = Vec::with_capacity(claims.len() * 4);
-    for &(min_x, max_x, min_ts, max_ts) in claims {
+fn flatten_public_bounds_outside(claims: &[(u32, u32, u32, u32, u32, u32)]) -> Vec<Val> {
+    let mut out = Vec::with_capacity(claims.len() * 6);
+    for &(min_x, max_x, min_y, max_y, min_ts, max_ts) in claims {
         out.push(Val::new(min_x));
         out.push(Val::new(max_x));
+        out.push(Val::new(min_y));
+        out.push(Val::new(max_y));
         out.push(Val::new(min_ts));
         out.push(Val::new(max_ts));
     }
@@ -638,8 +726,9 @@ fn flatten_public_bounds_outside(claims: &[(u32, u32, u32, u32)]) -> Vec<Val> {
 
 fn prove_outside_box_shared_private_aggregate(
     x_private: u32,
+    y_private: u32,
     ts_private: u32,
-    claims: &[(u32, u32, u32, u32)],
+    claims: &[(u32, u32, u32, u32, u32, u32)],
 ) -> p3_uni_stark::Proof<MyConfig> {
     // Setup Plonky3 config (ZK PCS)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -654,7 +743,7 @@ fn prove_outside_box_shared_private_aggregate(
     let challenger = Challenger::new(perm);
     let config = MyConfig::new(pcs, challenger);
 
-    let trace = build_trace_outside_box_shared_private(x_private, ts_private, claims);
+    let trace = build_trace_outside_box_shared_private(x_private, y_private, ts_private, claims);
     let public_values = flatten_public_bounds_outside(claims);
     let air = OutsideBoxAggregateAir { n_claims: claims.len() };
     prove(&config, &air, trace, &public_values)
@@ -662,7 +751,7 @@ fn prove_outside_box_shared_private_aggregate(
 
 fn verify_outside_box_shared_private_aggregate(
     proof: &p3_uni_stark::Proof<MyConfig>,
-    claims: &[(u32, u32, u32, u32)],
+    claims: &[(u32, u32, u32, u32, u32, u32)],
 ) -> bool {
     // Setup Plonky3 config (ZK PCS)
     let mut rng = SmallRng::seed_from_u64(1);
@@ -948,16 +1037,16 @@ fn main() {
         println!("Plonky3 proof verification result: {}", verified);
     }
     {
-        println!("--- OutsideBoxAggregateAir demo: shared (x,ts), multiple public ranges ---");
-        let (x_priv, ts_priv) = (42u32, 1000u32);
-        // Each tuple: (min_x, max_x, min_ts, max_ts)
-    // Ensure each claim has x outside and ts inside; tweak bounds accordingly
+        println!("--- OutsideBoxAggregateAir demo: shared (x,y,ts), multiple public ranges ---");
+        let (x_priv, y_priv, ts_priv) = (42u32, 7u32, 1000u32);
+        // Each tuple: (min_x, max_x, min_y, max_y, min_ts, max_ts)
+        // Ensure each claim has x outside, y outside, and ts inside
         let claims = vec![
-            (10, 20, 900, 1100),   // outside by right
-            (43, 60, 950, 1050),   // outside by left (x<min_x)
-            (0, 10, 800, 2000),    // outside by right
+            (10, 20, 10, 20, 900, 1100),   // x outside (right), y outside (below), ts inside
+            (43, 60, 0, 5, 950, 1050),     // x outside (left), y outside (above), ts inside
+            (0, 10, 8, 9, 800, 2000),      // x outside (right), y outside (below), ts inside
         ];
-        let proof = prove_outside_box_shared_private_aggregate(x_priv, ts_priv, &claims);
+        let proof = prove_outside_box_shared_private_aggregate(x_priv, y_priv, ts_priv, &claims);
         let ok = verify_outside_box_shared_private_aggregate(&proof, &claims);
         println!("OutsideBoxAggregateAir verification result: {} ({} claims)", ok, claims.len());
     }
